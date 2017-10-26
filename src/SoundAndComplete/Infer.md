@@ -614,7 +614,9 @@ checkSubtype' ctx p a b  = case p of
 
 ## Instantiation
 
-![Instantiation rules](https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-instantiation.png)
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-instantiation.png"/>
+</p>
 
 ```haskell
 -- | Instantiate an existential variable.
@@ -704,7 +706,9 @@ check ctx ep ty prin = do
 
 Eventually this huge image will be cropped into little pieces and each of them displayed with the associated code.
 
-![Typing rules](https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-all.png)
+<p align="center">
+<img src="https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-all.png"/>
+</p>
 
 ```haskell
 -- | The function that actually does all the type-checking.
@@ -718,15 +722,19 @@ check'
 check' ctx ep ty prin
 ```
 
-![UnitIntro](https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-unit-intro.png)
-
-```
+```haskell
   ------------------------------------------------------------------------------
   -- [Rule: UnitIntro]
   --
   -- Introduction form for checking () against the Unit type.
   ------------------------------------------------------------------------------
+```
 
+<p align="center">
+<img src="https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-unit-intro.png"/>
+</p>
+
+```haskell
   | EpUnit <- ep
   , TyUnit <- ty
   = do
