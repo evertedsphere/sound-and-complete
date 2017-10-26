@@ -1,5 +1,4 @@
-{-# OPTIONS_GHC -Wall -Wno-deprecations -Wno-unused-matches -Wno-unused-local-binds #-}
--- for now ^^^
+{-# OPTIONS_GHC -Wno-deprecations -Wno-unused-matches -Wno-unused-local-binds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE GADTs #-}
@@ -510,17 +509,105 @@ headConClash a b
   = False
 
 -- | Check two propositions for equivalence.
-propEquiv :: Ctx -> Prop -> Prop -> (Ctx, Bool)
+-- Nothing signifies inequivalence.
+-- TODO better representation?
+propEquiv :: Ctx -> Prop -> Prop -> TcM Ctx
 propEquiv = unimplemented
 
 -- | Check two types for equivalence.
-typeEquiv :: Ctx -> Ty -> Ty -> (Ctx, Bool)
+typeEquiv :: Ctx -> Ty -> Ty -> TcM Ctx
 typeEquiv = unimplemented
+
+_TyExVar :: Prism' Ty ExVar
+_TyExVar = prism' TyExVar (\case
+  TyExVar e -> Just e
+  _ -> Nothing)
+
+_TyUnVar :: Prism' Ty UnVar
+_TyUnVar = prism' TyUnVar (\case
+  TyUnVar e -> Just e
+  _ -> Nothing)
+
+-- | Using prisms here for kicks. A simple pattern-match would likely
+-- be more efficient.
+-- nonQuantifierHead :: Ty -> Bool
+-- nonQuantifierHead = liftA2 (&&) (isn't _TyExVar) (isn't _TyUnVar)
+
+polNeg :: Ty -> Bool
+polNeg t = polarity t == Negative
+
+polPos :: Ty -> Bool
+polPos t = polarity t == Positive
+
+polNonneg :: Ty -> Bool
+polNonneg = not . polPos
+
+polNonpos :: Ty -> Bool
+polNonpos = not . polNeg
+
+negNonpos :: Ty -> Ty -> Bool
+negNonpos a b = nnp a b || nnp b a
+  where nnp p q = polNeg p && polNonpos q
+
+posNonneg :: Ty -> Ty -> Bool
+posNonneg a b = pnn a b || pnn b a
+  where pnn p q = polPos p && polNonneg q
+
+--------------------------------------------------------------------------------
+-- [Subtype-checking]
+--------------------------------------------------------------------------------
+
+-- | Does a type have an existential quantifier in the head?
+notExistsHead :: Ty -> Bool
+notExistsHead = \case
+  TyExists{} -> False
+  _          -> True
+
+-- | Does a type have a universal quantifier in the head?
+notForallHead :: Ty -> Bool
+notForallHead = \case
+  TyForall{} -> False
+  _          -> True
+
+-- | Does a type have some quantifier in the head?
+notQuantifierHead :: Ty -> Bool
+notQuantifierHead ty = notExistsHead ty && notForallHead ty
+
+-- | Logging wrapper for the real subtyping function.
+checkSubtype :: Ctx -> Polarity -> Ty -> Ty -> TcM Ctx
+checkSubtype ctx p a b = do
+  tell' ("Checking if" <+> pprTy a <+> "<=" <+> "(" <> pprPolarity p <> ")" <+> pprTy b)
+  checkSubtype' ctx p a b
 
 -- | Given a context and a polarity p, check if a type is a p-subtype of
 -- another.
-checkSubtype :: Ctx -> Polarity -> Ty -> Ty -> Ctx
-checkSubtype ctx p a b = unimplemented
+checkSubtype' :: Ctx -> Polarity -> Ty -> Ty -> TcM Ctx
+checkSubtype' ctx p a b  = case p of
+  
+  --------------------------------------------------------------------------
+  -- [Rules: Subtype-MinusPlus-L and Subtype-MinusPlus-R]
+  --------------------------------------------------------------------------
+  Positive -> do
+    -- TODO Add Subtype-Exists-(L|R)
+    unless (negNonpos a b) (throwError "subtyping fail: not negNonpos")
+    checkSubtype ctx Negative a b
+
+  --------------------------------------------------------------------------
+  -- [Rules: Subtype-MinusPlus-L and Subtype-MinusPlus-R]
+  --------------------------------------------------------------------------
+  Negative -> do
+    -- TODO Add Subtype-Forall-(L|R)
+    unless (posNonneg a b) (throwError "subtyping fail: not negNonpos")
+    checkSubtype ctx Positive a b
+
+  ------------------------------------------------------------------------------
+  -- [Rule: SubtypeEquiv]
+  --
+  -- We don't check the polarity in this case.
+  ------------------------------------------------------------------------------
+  Nonpolar -> do 
+    unless ((a, b) & allOf each notQuantifierHead) (throwError "nonpolar")
+    typeEquiv ctx a b
 
 -- | Instantiate an existential variable.
 instExVar :: Ctx -> ExVar -> Tm -> Sort -> Ctx
@@ -554,7 +641,10 @@ fill (Ctx l) f (Ctx r) = Ctx ((l S.|> f) <> r)
 -- | Find the "polarity" of a type. Polarities are mainly (only?) used for the
 -- subtyping judgment.
 polarity :: Ty -> Polarity
-polarity = unimplemented
+polarity = \case
+  TyExVar{} -> Positive
+  TyUnVar{} -> Negative
+  _ -> Nonpolar
 
 -- | Turn A into [a^/a]A -- or, as I like to think of
 -- it, A[a -> a^], read "A with a going to a^".
@@ -583,79 +673,6 @@ notACase :: Expr -> Bool
 notACase = \case
   EpCase {} -> False
   _         -> True
-
---------------------------------------------------------------------------------
--- Pretty-printing
---------------------------------------------------------------------------------
-
-pprUnVar :: UnVar -> Text
-pprUnVar (UnSym s) = s <> "^"
-
-pprExVar :: ExVar -> Text
-pprExVar (ExSym s) = s <> "^"
-
-(<+>) a b = a <> " " <> b
-
-pprTy :: Ty -> Text
-pprTy = \case
-  TyUnit -> "Unit"
-  TyUnVar un -> pprUnVar un
-  TyExVar ex -> pprExVar ex
-  TyBinop l op r  -> pprTy l <+> pprBin op <+> pprTy r
-  TyForall s sort ty -> "∀" <> pprUnVar s <> ". " <> pprTy ty
-  ty -> tshow ty
-
-pprTm :: Tm -> Text
-pprTm = \case
-  TmUnit -> "Unit"
-  TmUnVar un -> pprUnVar un
-  TmExVar ex -> pprExVar ex
-  TmBinop l op r  -> pprTm l <+> pprBin op <+> pprTm r
-  tm -> tshow tm
-
-pprBin :: Binop -> Text
-pprBin OpArrow = "->"
-pprBin OpSum = "+"
-pprBin OpProd = "×"
-
-pprSort :: Sort -> Text
-pprSort = tshow
-
-pprFact' :: Fact -> Text
-pprFact' = \case
-  FcUnSort un sort -> pprUnVar un <> " : " <> pprSort sort
-  FcExSort ex sort -> pprExVar ex <> " : " <> pprSort sort
-  FcUnEq un tm -> pprUnVar un <> " = " <> pprTm tm
-  FcExEq ex sort tm ->
-    pprExVar ex <> " : " <> pprSort sort <> " = " <> pprTm tm
-  FcUnMark un -> "▶" <> pprUnVar un
-  FcExMark ex -> "▶" <> pprExVar ex
-  FcPropMark prop -> "▶" <> pprProp prop
-  FcVarTy var ty prin -> pprVar var <> " : " <> pprTy ty <+> pprPrin prin
-
-pprFact :: Fact -> Text
-pprFact f = "[" <> pprFact' f <> "]"
-
-pprVar :: Var -> Text
-pprVar (Sym s) = s
-
-pprExpr :: Expr -> Text
-pprExpr = \case
-  EpVar var -> pprVar var
-  EpUnit -> "Unit"
-  EpLam var e -> "λ" <> pprVar var <> ". "  <> pprExpr e
-  EpAnn e ty -> pprExpr e <> " : " <> pprTy ty
-  e -> tshow e
-
-pprPrin :: Prin -> Text
-pprPrin Bang = "!"
-pprPrin Slash = "?"
-
-pprCtx :: Ctx -> Text
-pprCtx (Ctx s) = s & toList & map pprFact & T.unwords
-
-pprProp :: Prop -> Text
-pprProp (Equation a b) = "<" <> pprTm a <> " = " <> pprTm b <> ">"
 
 tell' :: Text -> TcM ()
 tell' x = tell [x]
@@ -935,7 +952,7 @@ check' ctx ep ty prin
   , polB <- polarity b
   = do tell' "Sub"
        (a, q, theta) <- infer ctx e
-       pure (checkSubtype theta polB a b)
+       checkSubtype theta polB a b
 
   | otherwise
   = throwError "this shouldn't happen"
@@ -983,7 +1000,7 @@ infer ctx ep = case ep of
           pure (c, q, delta)
 
 
-  _ -> throwError "infer: impossible"
+  _ -> throwError ("infer: don't know how to infer type of" <+> pprExpr ep)
 
 freshHint :: Text -> TcM Text
 freshHint hint = do
@@ -1228,4 +1245,83 @@ tyExtl s = TyExVar (ExSym s)
 
 ty_unit_to_unit :: Ty
 ty_unit_to_unit = TyUnit `TyArrow` TyUnit
+
+--------------------------------------------------------------------------------
+-- Pretty-printing
+--------------------------------------------------------------------------------
+
+pprPolarity :: Polarity -> Text
+pprPolarity = \case
+  Positive -> "+"
+  Negative -> "-"
+  Nonpolar -> "0"
+
+pprUnVar :: UnVar -> Text
+pprUnVar (UnSym s) = s <> "^"
+
+pprExVar :: ExVar -> Text
+pprExVar (ExSym s) = s <> "^"
+
+(<+>) a b = a <> " " <> b
+
+pprTy :: Ty -> Text
+pprTy = \case
+  TyUnit -> "Unit"
+  TyUnVar un -> pprUnVar un
+  TyExVar ex -> pprExVar ex
+  TyBinop l op r  -> pprTy l <+> pprBin op <+> pprTy r
+  TyForall s sort ty -> "∀" <> pprUnVar s <> ". " <> pprTy ty
+  ty -> tshow ty
+
+pprTm :: Tm -> Text
+pprTm = \case
+  TmUnit -> "Unit"
+  TmUnVar un -> pprUnVar un
+  TmExVar ex -> pprExVar ex
+  TmBinop l op r  -> pprTm l <+> pprBin op <+> pprTm r
+  tm -> tshow tm
+
+pprBin :: Binop -> Text
+pprBin OpArrow = "->"
+pprBin OpSum = "+"
+pprBin OpProd = "×"
+
+pprSort :: Sort -> Text
+pprSort = tshow
+
+pprFact' :: Fact -> Text
+pprFact' = \case
+  FcUnSort un sort -> pprUnVar un <> " : " <> pprSort sort
+  FcExSort ex sort -> pprExVar ex <> " : " <> pprSort sort
+  FcUnEq un tm -> pprUnVar un <> " = " <> pprTm tm
+  FcExEq ex sort tm ->
+    pprExVar ex <> " : " <> pprSort sort <> " = " <> pprTm tm
+  FcUnMark un -> "▶" <> pprUnVar un
+  FcExMark ex -> "▶" <> pprExVar ex
+  FcPropMark prop -> "▶" <> pprProp prop
+  FcVarTy var ty prin -> pprVar var <> " : " <> pprTy ty <+> pprPrin prin
+
+pprFact :: Fact -> Text
+pprFact f = "[" <> pprFact' f <> "]"
+
+pprVar :: Var -> Text
+pprVar (Sym s) = s
+
+pprExpr :: Expr -> Text
+pprExpr = \case
+  EpVar var -> pprVar var
+  EpUnit -> "Unit"
+  EpLam var e -> "λ" <> pprVar var <> ". "  <> pprExpr e
+  EpAnn e ty -> pprExpr e <> " : " <> pprTy ty
+  e -> tshow e
+
+pprPrin :: Prin -> Text
+pprPrin Bang = "!"
+pprPrin Slash = "?"
+
+pprCtx :: Ctx -> Text
+pprCtx (Ctx s) = s & toList & map pprFact & T.unwords
+
+pprProp :: Prop -> Text
+pprProp (Equation a b) = "<" <> pprTm a <> " = " <> pprTm b <> ">"
 
