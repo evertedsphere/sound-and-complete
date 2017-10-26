@@ -610,7 +610,13 @@ checkSubtype' ctx p a b  = case p of
   Nonpolar -> do 
     unless ((a, b) & allOf each notQuantifierHead) (throwError "nonpolar")
     typeEquiv ctx a b
+```
 
+## Instantiation
+
+![Instantiation rules](https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-instantiation.png)
+
+```haskell
 -- | Instantiate an existential variable.
 instExVar :: Ctx -> ExVar -> Tm -> Sort -> TcM Ctx
 instExVar = unimplemented
