@@ -684,7 +684,11 @@ notACase = \case
 
 tell' :: Text -> TcM ()
 tell' x = tell [x]
+```
 
+## Type checking and inference
+
+```haskell
 -- | The type-checking wrapper function. For now, this just logs a bit of
 -- data and calls out to the *real* type-checking function.
 check :: Ctx -> Expr -> Ty -> Prin -> TcM Ctx
@@ -696,7 +700,13 @@ check ctx ep ty prin = do
   tell ["with principality: " <> pprPrin prin]
   tell ["in context: " <> pprCtx ctx]
   check' ctx ep ty prin
+```
 
+Eventually this huge image will be cropped into little pieces and each of them displayed with the associated code.
+
+![Typing rules](https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-all.png)
+
+```haskell
 -- | The function that actually does all the type-checking.
 check'
   :: Ctx      -- ^ context representing knowledge before attempting the typecheck
@@ -706,7 +716,11 @@ check'
   -> TcM Ctx  -- ^ an updated context, representing what we know after said attempt
 
 check' ctx ep ty prin
+```
 
+![UnitIntro](https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-unit-intro.png)
+
+```
   ------------------------------------------------------------------------------
   -- [Rule: UnitIntro]
   --
