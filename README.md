@@ -77,12 +77,13 @@ quickly make this highly nontrivial. Sound and Complete gives a complete specifi
 
 * [Typing Haskell in Haskell](https://web.cecs.pdx.edu/~mpj/thih/), a small typechecker for most of Haskell 98. A much easier-to-read Markdown version can be found [here](https://gist.github.com/chrisdone/0075a16b32bfd4f62b7b), courtesy of Chris Done.
 
-## (Poorly-thought-through) roadmap
+## Tentative roadmap (read TODO list)
 
 - [ ] finish implementing Sound and Complete
 - [ ] write a good test-suite
 - [ ] write a frontend
 - [ ] write a proof-of-concept interpreter
+- [ ] add HM-like type inference, find if this can be done without breaking any properties
 - [ ] investigate typeclasses
 - [ ] LLVM backend
 - [ ] don't think too far
