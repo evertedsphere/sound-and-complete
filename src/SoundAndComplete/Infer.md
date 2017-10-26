@@ -1,3 +1,4 @@
+```haskell
 {-# OPTIONS_GHC -Wno-deprecations -Wno-unused-matches -Wno-unused-local-binds #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -173,6 +174,7 @@ exVarSort :: Ctx -> ExVar -> Maybe Sort
 exVarSort ctx ex
   | Just (FcExSort _ sort) <- factWith (exVarSort' ex) ctx
   = Just sort
+
   | otherwise = Nothing
   where
     exVarSort' e1 (FcExSort e2 _) = e1 == e2
@@ -610,7 +612,7 @@ checkSubtype' ctx p a b  = case p of
     typeEquiv ctx a b
 
 -- | Instantiate an existential variable.
-instExVar :: Ctx -> ExVar -> Tm -> Sort -> Ctx
+instExVar :: Ctx -> ExVar -> Tm -> Sort -> TcM Ctx
 instExVar = unimplemented
 
 -- | Try to find a fact in the context that tells us what type and principality
@@ -1324,4 +1326,4 @@ pprCtx (Ctx s) = s & toList & map pprFact & T.unwords
 
 pprProp :: Prop -> Text
 pprProp (Equation a b) = "<" <> pprTm a <> " = " <> pprTm b <> ">"
-
+```
