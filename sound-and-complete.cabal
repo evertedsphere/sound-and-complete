@@ -20,6 +20,7 @@ executable sound-and-complete
   main-is:             Main.lhs
   -- other-modules:       
   -- other-extensions:    
+  ghc-options:         -pgmL markdown-unlit
   build-depends:       base >=4.10 && <4.11
                      , mtl
                      , transformers
