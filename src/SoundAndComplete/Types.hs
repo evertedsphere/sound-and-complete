@@ -222,9 +222,10 @@ newtype Ctx = Ctx (Seq Fact)
   deriving newtype Monoid
   deriving newtype Semigroup
 
--- | A possibly-inconsistent context.
-data PICtx 
-  = ConCtx Ctx
+-- | A possibly-inconsistent context, carrying some extra information.
+-- This is isomorphic to Maybe (Ctx, a).
+data PICtx a
+  = ConCtx Ctx a
   -- ^ A consistent context.
   | Bottom
   -- ^ Inconsistency.

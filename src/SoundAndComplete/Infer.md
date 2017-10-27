@@ -432,7 +432,7 @@ substituteCtxTm = unimplemented
 
 -- | Assume a hypothesis is true in a given context, and return either an
 -- updated context or (in case the context becomes inconsistent) @Bottom@.
-assumeHypo :: Ctx -> Prop -> PICtx
+assumeHypo :: Ctx -> Prop -> PICtx ()
 assumeHypo = unimplemented
 
 checkProp :: Ctx -> Prop -> Ctx
@@ -445,7 +445,7 @@ checkEq = unimplemented
 
 -- | Unify two terms or monotypes, taking context ctx = \Gamma to
 -- either a modified context \Delta or inconsistency.
-unify :: Ctx -> Tm -> Tm -> TcM (Maybe Sort, PICtx)
+unify :: Ctx -> Tm -> Tm -> TcM (PICtx Sort)
 unify ctx a b
 
   -- [Rule: ElimeqUVarRefl]
@@ -453,34 +453,34 @@ unify ctx a b
   | TmUnVar{} <- a
   , a == b
   = do sort <- termSort ctx a
-       pure (Just sort, ConCtx ctx)
+       pure (ConCtx ctx sort)
 
   -- [Rule: ElimeqUnit]
 
   | TmUnit <- a
   , TmUnit <- b
-  = pure (Just Star, ConCtx ctx)
+  = pure (ConCtx ctx Star)
 
   -- [Rule: ElimeqZero]
 
   | TmNat Zero <- a
   , TmNat Zero <- b
-  = pure (Just Nat, ConCtx ctx)
+  = pure (ConCtx ctx Nat)
 
   -- [Rule: ElimeqSucc]
 
   | TmNat (Succ sigma) <- a
   , TmNat (Succ tau)   <- b
   = do
-      (sort, ctx')   <- unify ctx (TmNat sigma) (TmNat tau)
-      case sort of
-        Just Nat -> pure (Just Nat, ConCtx ctx)
+      res <- unify ctx (TmNat sigma) (TmNat tau)
+      case res of
+        ConCtx _ Nat -> pure res
         _ -> throwError "lol"
 
   -- [Rule: ElimeqClash]
 
   | headConClash a b
-  = pure (Nothing, Bottom)
+  = pure Bottom
 
   | otherwise
   = unimplemented
@@ -824,7 +824,7 @@ check' ctx ep ty prin
   -- broke nothing), so we continue with the extra knowledge it gave us.
   -----------------------------------------------------------------------------
 
-      ConCtx theta -> do -- 3.
+      ConCtx theta _ -> do -- 3.
          outputCtx <- check theta nu (substituteCtx theta a) Bang
          tell' "ImpliesIntro"
          case hole markP outputCtx of
