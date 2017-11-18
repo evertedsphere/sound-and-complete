@@ -27,6 +27,7 @@ executable sound-and-complete
                      , safe
                      , lens
                      , prettyprinter
+                     , hspec
                      , containers
                      , adjunctions
                      , profunctors

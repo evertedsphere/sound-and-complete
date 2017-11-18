@@ -1,5 +1,5 @@
-```haskell
 {-# OPTIONS_GHC -Wno-deprecations -Wno-unused-matches -Wno-unused-local-binds #-}
+
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE GADTs #-}
@@ -59,6 +59,7 @@ import qualified Data.Sequence as S
 import qualified Data.Text.Lazy as T
 
 import SoundAndComplete.Types
+import Test.Hspec
 
 import Safe
 
@@ -119,14 +120,25 @@ counter :: Lens' TcState Int
 counter = lens _tcState_fresh_counter (\t c -> t { _tcState_fresh_counter = c })
 
 typecheck :: Show a => TcM a -> IO ()
-typecheck action = do
+typecheck = typecheck' print
+
+ppInfer :: TcM (Ty, Prin, Ctx) -> IO ()
+ppInfer = typecheck' pp
+  where 
+    pp (t, p, c) = do
+      putTextLn (pprTy t)
+      putTextLn (pprPrin p)
+      putTextLn (pprCtx c)
+
+typecheck' :: (a -> IO ()) -> TcM a -> IO ()
+typecheck' f action = do
   case result of
     Left err -> do
       putTextLn "Error while typechecking: "
       putTextLn err
     Right res -> do
       putTextLn "Typechecked successfully; result: "
-      print res
+      f res
 
   putTextLn ""
 
@@ -261,7 +273,7 @@ termSort ctx = \case
 
       _ -> case solvedExVarSort ctx ex of
              Just sort -> pure sort
-             _ -> unimplemented
+             _ -> throwError "unknown exvar"
 
   _ -> throwError "This shouldn't happen"
 
@@ -362,10 +374,10 @@ typeWF ctx ty
   = liftA2 (&&) (propWF ctx pr) (typeWF ctx a)
 
   | otherwise
-  = unimplemented
+  = throwError "366"
 
 prinTypeWF :: Ctx -> Ty -> Prin -> Bool
-prinTypeWF = unimplemented
+prinTypeWF = error "prinTypeWF"
 
 ctxWF :: Ctx -> Bool
 ctxWF (Ctx s)
@@ -428,20 +440,20 @@ substituteCtx ctx = transformOn terms subTm
 
 -- | Substitute a context into a term or monotype.
 substituteCtxTm :: Ctx -> Tm -> Tm
-substituteCtxTm = unimplemented
+substituteCtxTm = error "substituteCtxTm"
 
 -- | Assume a hypothesis is true in a given context, and return either an
 -- updated context or (in case the context becomes inconsistent) @Bottom@.
 assumeHypo :: Ctx -> Prop -> PICtx ()
-assumeHypo = unimplemented
+assumeHypo = error "assumeHypo"
 
 checkProp :: Ctx -> Prop -> Ctx
-checkProp = unimplemented
+checkProp = error "checkProp"
 
 -- | Check that two monotypes are equal, possibly modifying the
 -- context.
 checkEq :: Ctx -> Tm -> Tm -> Ctx
-checkEq = unimplemented
+checkEq = error "checkEq"
 
 -- | Unify two terms or monotypes, taking context ctx = \Gamma to
 -- either a modified context \Delta or inconsistency.
@@ -483,7 +495,7 @@ unify ctx a b
   = pure Bottom
 
   | otherwise
-  = unimplemented
+  = throwError "unify"
 
 headConClash :: Tm -> Tm -> Bool
 headConClash a b
@@ -514,11 +526,11 @@ headConClash a b
 -- Nothing signifies inequivalence.
 -- TODO better representation?
 propEquiv :: Ctx -> Prop -> Prop -> TcM Ctx
-propEquiv = unimplemented
+propEquiv = error "propEquiv"
 
 -- | Check two types for equivalence.
 typeEquiv :: Ctx -> Ty -> Ty -> TcM Ctx
-typeEquiv = unimplemented
+typeEquiv = error "typeEquiv"
 
 _TyExVar :: Prism' Ty ExVar
 _TyExVar = prism' TyExVar (\case
@@ -610,18 +622,10 @@ checkSubtype' ctx p a b  = case p of
   Nonpolar -> do 
     unless ((a, b) & allOf each notQuantifierHead) (throwError "nonpolar")
     typeEquiv ctx a b
-```
 
-## Instantiation
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-instantiation.png"/>
-</p>
-
-```haskell
 -- | Instantiate an existential variable.
 instExVar :: Ctx -> ExVar -> Tm -> Sort -> TcM Ctx
-instExVar = unimplemented
+instExVar = error "instExVar"
 
 -- | Try to find a fact in the context that tells us what type and principality
 -- a variable has, or, failing that, return Nothing.
@@ -686,11 +690,7 @@ notACase = \case
 
 tell' :: Text -> TcM ()
 tell' x = tell [x]
-```
 
-## Type checking and inference
-
-```haskell
 -- | The type-checking wrapper function. For now, this just logs a bit of
 -- data and calls out to the *real* type-checking function.
 check :: Ctx -> Expr -> Ty -> Prin -> TcM Ctx
@@ -702,15 +702,7 @@ check ctx ep ty prin = do
   tell ["with principality: " <> pprPrin prin]
   tell ["in context: " <> pprCtx ctx]
   check' ctx ep ty prin
-```
 
-Eventually this huge image will be cropped into little pieces and each of them displayed with the associated code.
-
-<p align="center">
-<img src="https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-all.png"/>
-</p>
-
-```haskell
 -- | The function that actually does all the type-checking.
 check'
   :: Ctx      -- ^ context representing knowledge before attempting the typecheck
@@ -720,21 +712,6 @@ check'
   -> TcM Ctx  -- ^ an updated context, representing what we know after said attempt
 
 check' ctx ep ty prin
-```
-
-```haskell
-  ------------------------------------------------------------------------------
-  -- [Rule: UnitIntro]
-  --
-  -- Introduction form for checking () against the Unit type.
-  ------------------------------------------------------------------------------
-```
-
-<p align="center">
-<img src="https://raw.githubusercontent.com/mrkgnao/sound-and-complete/master/img/algorithmic-typing-unit-intro.png"/>
-</p>
-
-```haskell
   | EpUnit <- ep
   , TyUnit <- ty
   = do
@@ -846,7 +823,7 @@ check' ctx ep ty prin
              tell' "ImpliesIntroBottom"
              pure ctx
       _ -> do
-        throwError "lol"
+        throwError "check: ImpliesIntro*: fail"
 
   -----------------------------------------------------------------------------
   -- [Rule: ArrowIntro]
@@ -916,7 +893,7 @@ check' ctx ep ty prin
 
   | EpInj inj e <- ep
   , TyExVar a'  <- ty
-  = unimplemented
+  = throwError "SumIntro-Extlₖ"
 
   -- TODO
   -- should we add, e.g. an EpInj case here that catches everything falling
@@ -951,7 +928,7 @@ check' ctx ep ty prin
       a'1 <- freshEx
       a'2 <- freshEx
 
-      let a'eq  = FcExEq a' Star (TmExVar a'1 `TmArrow` TmExVar a'2)
+      let a'eq  = FcExEq a' Star (TmExVar a'1 `TmProd` TmExVar a'2)
           a'1s  = FcExSort a'1 Star
           a'2s  = FcExSort a'2 Star
           ctx'  = left <> Ctx [a'1s, a'2s, a'eq] <> right
@@ -1045,7 +1022,10 @@ freshEx = ExSym <$> fresh
 
 -- | The free existential variables in a type.
 freeExtls :: Ty -> [ExVar]
-freeExtls = unimplemented
+freeExtls = \case
+  TyExVar ex -> [ex]
+  TyBinop a _ b -> freeExtls a <> freeExtls b
+  _ -> error "!"
 
 -- | A synonym for @freeExtls@ matching the notation from the paper.
 fev :: Ty -> [ExVar]
@@ -1086,7 +1066,7 @@ inferSpine ctx sp ty p
   ------------------------------------------------------------------------------
   -- [Rule: ForallSpine]
   --
-  -- The principality is omitted in the "top" rule (the not-consequent), so per
+  -- The principality is omitted in the "top" rule (the antecedent?), so per
   -- the "sometimes omitted" note in [Figure: Syntax of declarative types and
   -- constructs], I'm assuming that means it's nonprincipal.
   ------------------------------------------------------------------------------
@@ -1133,22 +1113,41 @@ inferSpine ctx sp ty p
   | TyArrow a b <- ty
   , Spine (e : s') <- sp
   , s <- Spine s'
-  = do -- match the "function" against the input type a
-       theta <- check ctx e a p
-       -- match the "argument" against the output type b
-       (c, q, delta) <- inferSpine theta s (substituteCtx theta b) p
-       pure (c, q, delta)
+  = do 
+    -- match the "function" against the input type a
+    theta <- check ctx e a p
+    -- match the "argument" against the output type b
+    (c, q, delta) <- inferSpine theta s (substituteCtx theta b) p
+    pure (c, q, delta)
 
   ------------------------------------------------------------------------------
   -- [Rule: Spine-Extl]
+  --
+  -- FIXME: Should we be returning the original principality, or just Slash
+  -- since it was left unspecified?
   ------------------------------------------------------------------------------
 
-  | TyExVar ex <- ty
+  | TyExVar ex@a' <- ty
   , Spine (e : s') <- sp
-  = unimplemented
+  , Just Star            <- exVarSort ctx ex
+  , Just (left, right)   <- hole (FcExSort ex Star) ctx
+  = do
+      a'1 <- freshEx
+      a'2 <- freshEx
+
+      let 
+        arrowMType = TmExVar a'1 `TmArrow` TmExVar a'2
+        arrowType = TyExVar a'1 `TyArrow` TyExVar a'2
+        a'eq  = FcExEq a' Star arrowMType
+        a'1s  = FcExSort a'1 Star
+        a'2s  = FcExSort a'2 Star
+        ctx'  = left <> Ctx [a'1s, a'2s, a'eq] <> right
+
+      delta <- check ctx' e (TyExVar a'1) Slash
+      pure (arrowType, p, delta)
 
   | otherwise
-  = unimplemented
+  = throwError "inferSpine: the likely-impossible happened"
 
 -- | Infer the type of a spine application. Additionally, this form
 -- attempts to recover principality in the output type.
@@ -1183,7 +1182,7 @@ inferSpineRecover ctx s a p = do
         _ -> throwError "is this even possible?"
 
 checkBranches :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> Ctx
-checkBranches = unimplemented
+checkBranches = error "checkBranches"
 
 --------------------------------------------------------------------------------
 -- [Coverage checking]
@@ -1237,7 +1236,7 @@ coverageCheck ctx alts tys
   ------------------------------------------------------------------------------
 
   | otherwise
-  = unimplemented
+  = error "coverageCheck"
 
 -- | This implements the second of the two coverage-checking judgments, which
 -- takes a proposition into account.
@@ -1259,7 +1258,7 @@ coverageCheckAssuming ctx prop alts tys
   ------------------------------------------------------------------------------
 
   | otherwise
-  = unimplemented
+  = error "coverageCheckAssuming"
 
 lam :: Text -> Expr -> Expr
 lam v = EpLam (Sym v)
@@ -1339,10 +1338,11 @@ pprVar (Sym s) = s
 
 pprExpr :: Expr -> Text
 pprExpr = \case
-  EpVar var -> pprVar var
   EpUnit -> "Unit"
   EpLam var e -> "λ" <> pprVar var <> ". "  <> pprExpr e
   EpAnn e ty -> pprExpr e <> " : " <> pprTy ty
+  EpVar (Sym x) -> x
+  EpApp e (Spine s) -> "(" <> T.unwords (map pprExpr (e : s)) <> ")"
   e -> tshow e
 
 pprPrin :: Prin -> Text
@@ -1354,4 +1354,47 @@ pprCtx (Ctx s) = s & toList & map pprFact & T.unwords
 
 pprProp :: Prop -> Text
 pprProp (Equation a b) = "<" <> pprTm a <> " = " <> pprTm b <> ">"
-```
+
+execTcM :: TcM a -> Either Text a
+execTcM action = result
+  where
+    ((result, tcLog), finalState)
+      = action
+      & runTcM
+      & runExceptT
+      & (runReaderT ?? initialConfig)
+      & runWriterT'
+      & (runState ?? initialState)
+
+tests :: IO ()
+tests = hspec tests'
+
+eTermSort = execTcM . termSort initialContext
+
+tests' = 
+  describe "inferring the sort of a term (`termSort`)" $ do
+    context "given an existential variable" $ do
+      it "fails if the variable is unknown" $ do
+        eTermSort (TmExVar (ExSym "foo")) `shouldSatisfy` (isn't _Right)
+
+    it "sort of Unit is Star" $ do
+      eTermSort TmUnit `shouldBe` Right Star
+
+    it "sort of Unit -> Unit is Star" $ do
+      eTermSort (TmUnit `TmArrow` TmUnit) `shouldBe` Right Star
+
+idExpr :: Expr
+idExpr = EpLam x (EpVar x)
+  where x = Sym "x"
+
+idType :: Ty
+idType = TyForall ua Star (TyArrow uv uv)
+  where
+    ua = UnSym "t"
+    uv = TyUnVar ua
+
+idCtx :: Ctx
+idCtx = initialContext |> FcVarTy (Sym "id") idType Bang
+
+idApp :: Expr
+idApp = EpApp (EpVar (Sym "id")) (Spine [EpUnit])
