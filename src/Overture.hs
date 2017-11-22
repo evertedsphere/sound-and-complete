@@ -261,10 +261,16 @@ for :: Functor f => f a -> (a -> b) -> f b
 for = P.flip fmap
 {-# INLINE for #-}
 
+putTextLn :: LText.Text -> IO ()
 putTextLn = LTextIO.putStrLn
+
+putTextLn' :: SText.Text -> IO ()
 putTextLn' = STextIO.putStrLn
 
+putBSLn :: LByteString8.ByteString -> IO ()
 putBSLn = LByteString8.putStrLn
+
+putBSLn' :: SByteString8.ByteString -> IO ()
 putBSLn' = SByteString8.putStrLn
 
 -- | Do nothing returning unit inside applicative.

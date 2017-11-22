@@ -55,6 +55,7 @@ import Overture hiding (set, pred, sum, un, op, (|>), left, right, (<+>))
 
 import Data.Sequence (Seq, pattern (:|>))
 import qualified Data.Sequence as S
+import qualified Data.Map as M
 
 import qualified Data.Text.Lazy as T
 
@@ -63,14 +64,15 @@ import Test.Hspec
 
 import Safe
 
+import Debug.Trace
+
 --
 -- Typechecker environments
 --
 
 -- | Typechecker state
 data TcState  = TcState
-  { -- _tcState_context :: Ctx,
-    _tcState_fresh_counter :: Int
+  { _tcState_freshCounter :: Int
   }
    deriving (Show, Eq)
 
@@ -81,11 +83,20 @@ initialState :: TcState
 initialState = TcState 1
 
 -- | Typechecker configuration
-data TcConfig = TcConfig { }
+data TcConfig = TcConfig
+  { _tcConfig_log_indent :: Int
+  , _tcConfig_log_increment :: Int
+  }
   deriving (Show, Eq)
 
 initialConfig :: TcConfig
-initialConfig = TcConfig
+initialConfig = TcConfig 0 4
+
+logIndent :: Lens' TcConfig Int
+logIndent = lens _tcConfig_log_indent (\s l -> s { _tcConfig_log_indent = l })
+
+logIncrement :: Lens' TcConfig Int
+logIncrement = lens _tcConfig_log_increment (\s l -> s { _tcConfig_log_increment = l })
 
 -- | Like @MonadReader@'s @local@, but for @State@.
 slocal :: MonadState s m => (s -> s) -> m a -> m a
@@ -103,7 +114,7 @@ newtype TcM a
                       (ReaderT TcConfig
                         (WriterT' [Text]
                           (State TcState))) a }
-  deriving newtype
+  deriving
    ( Functor
    , Applicative
    , Monad
@@ -117,17 +128,23 @@ newtype TcM a
 -- lctx = lens (\(_tcState_context -> Ctx c) -> c) (\t c -> t { _tcState_context = Ctx c })
 
 counter :: Lens' TcState Int
-counter = lens _tcState_fresh_counter (\t c -> t { _tcState_fresh_counter = c })
+counter = lens _tcState_freshCounter (\t c -> t { _tcState_freshCounter = c })
 
 typecheck :: Show a => TcM a -> IO ()
 typecheck = typecheck' print
 
-ppInfer :: TcM (Ty, Prin, Ctx) -> IO ()
-ppInfer = typecheck' pp
-  where 
+ppInfer :: Ctx -> Expr -> IO ()
+ppInfer ctx ep = typecheck' pp $ infer ctx ep
+  where
     pp (t, p, c) = do
-      putTextLn (pprTy t)
-      putTextLn (pprPrin p)
+      putTextLn ("expr : " <> pprExpr ep)
+      putTextLn ("type : " <> pprTy t)
+      putTextLn (" ctx : " <> pprCtx c)
+
+ppCheck :: TcM Ctx -> IO ()
+ppCheck = typecheck' pp
+  where
+    pp c = do
       putTextLn (pprCtx c)
 
 typecheck' :: (a -> IO ()) -> TcM a -> IO ()
@@ -137,12 +154,8 @@ typecheck' f action = do
       putTextLn "Error while typechecking: "
       putTextLn err
     Right res -> do
-      putTextLn "Typechecked successfully; result: "
       f res
 
-  putTextLn ""
-
-  putTextLn "Typechecker log:"
   traverse_ putTextLn tcLog
 
   putTextLn ""
@@ -243,12 +256,12 @@ termSort ctx = \case
   -- [Rule: VarSort] (universal variable case)
   ------------------------------------------------------------------------------
 
-  TmUnVar un -> do
+  TmUnVar un ->
     case unVarSort ctx un of
       Just s -> pure s
       _ -> throwError "boom"
 
-  TmExVar ex -> do
+  TmExVar ex ->
 
   -- Now we're trying to find what sort an existential variable has. There are
   -- two kinds of fact our context can contain that tell us this:
@@ -310,8 +323,7 @@ typeWF ctx ty
   -- [Rule: SolvedVarWF]
 
   | TyExVar ex <- ty
-  = do
-      termSort ctx (TmExVar ex) >>= \case
+  = termSort ctx (TmExVar ex) >>= \case
         Star -> pure True
         _ -> throwError "lol"
 
@@ -416,7 +428,7 @@ chkI = checkedIntroForm
 
 -- | Substitute a context into a type.
 substituteCtx :: Ctx -> Ty -> Ty
-substituteCtx ctx = transformOn terms subTm 
+substituteCtx ctx = transformOn terms subTm
 -- \case
 --   TyUnVar un -> unimplemented
 --   TyExVar ex -> unimplemented
@@ -590,26 +602,32 @@ notQuantifierHead ty = notExistsHead ty && notForallHead ty
 -- | Logging wrapper for the real subtyping function.
 checkSubtype :: Ctx -> Polarity -> Ty -> Ty -> TcM Ctx
 checkSubtype ctx p a b = do
-  tell' ("Checking if" <+> pprTy a <+> "<=" <+> "(" <> pprPolarity p <> ")" <+> pprTy b)
-  checkSubtype' ctx p a b
+  r <- logRecurRule "  csub : " (checkSubtype' ctx p a b)
+  logText ("   lhs : " <> pprTy a)
+  logText ("  sign : " <> pprPolarity p)
+  logText ("   rhs : " <> pprTy b)
+  logText ("   ctx : " <> pprCtx ctx)
+  pure r
+
+withRule r = map (\x -> (x, r))
 
 -- | Given a context and a polarity p, check if a type is a p-subtype of
 -- another.
-checkSubtype' :: Ctx -> Polarity -> Ty -> Ty -> TcM Ctx
+checkSubtype' :: Ctx -> Polarity -> Ty -> Ty -> TcM (Ctx, Text)
 checkSubtype' ctx p a b  = case p of
-  
+
   --------------------------------------------------------------------------
   -- [Rules: Subtype-MinusPlus-L and Subtype-MinusPlus-R]
   --------------------------------------------------------------------------
   Positive -> do
     -- TODO Add Subtype-Exists-(L|R)
     unless (negNonpos a b) (throwError "subtyping fail: not negNonpos")
-    checkSubtype ctx Negative a b
+    withRule "Subtype-MinusPlus-*" (checkSubtype ctx Negative a b)
 
   --------------------------------------------------------------------------
   -- [Rules: Subtype-MinusPlus-L and Subtype-MinusPlus-R]
   --------------------------------------------------------------------------
-  Negative -> do
+  Negative -> withRule "Subtype-MinusPlus-*" $ do
     -- TODO Add Subtype-Forall-(L|R)
     unless (posNonneg a b) (throwError "subtyping fail: not negNonpos")
     checkSubtype ctx Positive a b
@@ -619,9 +637,9 @@ checkSubtype' ctx p a b  = case p of
   --
   -- We don't check the polarity in this case.
   ------------------------------------------------------------------------------
-  Nonpolar -> do 
+  Nonpolar -> do
     unless ((a, b) & allOf each notQuantifierHead) (throwError "nonpolar")
-    typeEquiv ctx a b
+    withRule "SubtypeEquiv" (typeEquiv ctx a b)
 
 -- | Instantiate an existential variable.
 instExVar :: Ctx -> ExVar -> Tm -> Sort -> TcM Ctx
@@ -688,20 +706,47 @@ notACase = \case
   EpCase {} -> False
   _         -> True
 
-tell' :: Text -> TcM ()
-tell' x = tell [x]
+logTextP :: Text -> TcM ()
+logTextP = logText' "|"
+
+logTextA :: Text -> TcM ()
+logTextA = logText' "|--"
+
+logText :: Text -> TcM ()
+logText = logText' "|"
+
+logAnte :: Text -> TcM ()
+logAnte = logText' "-"
+
+logPost :: Text -> TcM ()
+logPost = logText' "+"
+
+logText' :: Text -> Text -> TcM ()
+logText' t x = do
+  indent <- view logIndent
+  tell [T.replicate (fromIntegral indent) " " <> t <> " " <> x]
+
+logRecur action = do
+  incr <- view logIncrement
+  local (logIndent +~ incr) action
+
+logRecurRule prefix action = do
+  (result, rule) <- logRecur action
+  logText' " " ""
+  logText' "J" (prefix <> rule)
+  pure result
 
 -- | The type-checking wrapper function. For now, this just logs a bit of
 -- data and calls out to the *real* type-checking function.
 check :: Ctx -> Expr -> Ty -> Prin -> TcM Ctx
 check ctx ep ty prin = do
-  tell [""]
-  tell ["Checking "]
-  tell ["expression: " <> pprExpr ep]
-  tell ["against type: " <> pprTy ty]
-  tell ["with principality: " <> pprPrin prin]
-  tell ["in context: " <> pprCtx ctx]
-  check' ctx ep ty prin
+  r <- logRecurRule " check : " (check' ctx ep ty prin)
+  logText ("  expr : " <> pprExpr ep)
+  logText ("  type : " <> pprTy ty)
+  logText ("  prin : " <> pprPrin prin)
+  logAnte ("   ctx : " <> pprCtx ctx)
+  logPost ("   ctx : " <> pprCtx r)
+  pure r
 
 -- | The function that actually does all the type-checking.
 check'
@@ -709,14 +754,13 @@ check'
   -> Expr     -- ^ expression to be checked
   -> Ty       -- ^ type to be checked against
   -> Prin     -- ^ are we claiming the type is principal?
-  -> TcM Ctx  -- ^ an updated context, representing what we know after said attempt
+  -> TcM (Ctx, Text)  -- ^ an updated context, representing what we know after said attempt
 
 check' ctx ep ty prin
   | EpUnit <- ep
   , TyUnit <- ty
   = do
-      tell' "UnitIntro"
-      pure ctx
+      withRule "UnitIntro" (pure ctx)
 
   ------------------------------------------------------------------------------
   -- [Rule: UnitIntro-Extl]
@@ -727,8 +771,7 @@ check' ctx ep ty prin
   | EpUnit      <- ep
   , TyExVar ex  <- ty
   , Just (l, r) <- hole (FcExSort ex Star) ctx
-  = do tell' "UnitIntro-Extl"
-       pure (fill l (FcExEq ex Star TmUnit) r)
+  = do withRule "UnitIntro-Extl" (pure (fill l (FcExEq ex Star TmUnit) r))
 
   ------------------------------------------------------------------------------
   -- [Rule: WithIntro]
@@ -748,7 +791,7 @@ check' ctx ep ty prin
   | notACase ep
   , TyWith a prop <- ty
   , theta         <- checkProp ctx prop -- 1.
-  = do tell' "WithIntro"
+  = withRule "WithIntro" $ do
        let ty' = substituteCtx theta a  -- 2.
        check theta ep ty' prin          -- 3.
 
@@ -764,7 +807,7 @@ check' ctx ep ty prin
   , checkedIntroForm nu
   , TyForall alpha k a  <- ty
   , alpha'k             <- FcUnSort alpha k
-  = do tell' "ForallIntro"
+  = withRule "ForallIntro" $ do
        ctx' <- check (ctx |> alpha'k) nu a prin
        let Just (delta, theta) = hole alpha'k ctx'
        pure delta
@@ -801,9 +844,8 @@ check' ctx ep ty prin
   -- broke nothing), so we continue with the extra knowledge it gave us.
   -----------------------------------------------------------------------------
 
-      ConCtx theta _ -> do -- 3.
+      ConCtx theta _ -> withRule "ImpliesIntro" $ do -- 3.
          outputCtx <- check theta nu (substituteCtx theta a) Bang
-         tell' "ImpliesIntro"
          case hole markP outputCtx of
            Just (delta, delta') -> do
              pure delta
@@ -819,8 +861,7 @@ check' ctx ep ty prin
   -- @checkedIntroForm@ here.
   -----------------------------------------------------------------------------
 
-      Bottom | checkedIntroForm nu -> do -- 4.
-             tell' "ImpliesIntroBottom"
+      Bottom | checkedIntroForm nu -> withRule "ImpliesIntroBottom" $ do -- 4.
              pure ctx
       _ -> do
         throwError "check: ImpliesIntro*: fail"
@@ -835,10 +876,28 @@ check' ctx ep ty prin
   , EpLam x e           <- ep
   , TyArrow a b         <- ty
   , xap                 <- FcVarTy x a p
-  = do
-      tell' "ArrowIntro"
-      out <- check (ctx |> xap) e b p
-      case hole xap out of
+  = withRule "ArrowIntro" 
+  $ do
+      let xap = FcVarTy x a p
+      check (ctx |> xap) e b p
+        <&> hole xap
+        >>= \case 
+        Just (delta, theta) -> pure delta
+        _ -> throwError "lol"
+
+  ------------------------------------------------------------------------------
+  -- [Rule: Rec]
+  --
+  -- TODO reduce duplication, combine with ArrowIntro
+  ------------------------------------------------------------------------------
+
+  | EpRec x nu <- ep
+  = withRule "Rec"
+  $ do
+      let xap = FcVarTy x ty prin
+      check (ctx |> xap) nu ty prin 
+        <&> hole xap
+        >>= \case 
         Just (delta, theta) -> pure delta
         _ -> throwError "lol"
 
@@ -853,8 +912,7 @@ check' ctx ep ty prin
   , TyExVar ex@a'        <- ty
   , Just Star            <- exVarSort ctx ex
   , Just (left, right)   <- hole (FcExSort ex Star) ctx
-  = do
-      tell' "ArrowIntro-Extl"
+  = withRule "ArrowIntro-Extl" $ do
       a'1 <- freshEx
       a'2 <- freshEx
 
@@ -881,7 +939,8 @@ check' ctx ep ty prin
 
   | EpInj inj e     <- ep
   , TySum a1 a2     <- ty
-  = case inj of
+  = withRule "SumIntro-k" 
+  $ case inj of
       InjL -> check ctx e a1 prin
       InjR -> check ctx e a2 prin
 
@@ -908,7 +967,7 @@ check' ctx ep ty prin
 
   | EpProd e1 e2    <- ep
   , TyProd a1 a2    <- ty
-  = do tell' "ProdIntro"
+  = withRule "ProdIntro" $ do
        theta <- check ctx   e1 a1 prin
        check theta e2 (substituteCtx theta a2) prin
 
@@ -923,8 +982,8 @@ check' ctx ep ty prin
   , TyExVar ex@a'        <- ty
   , Just Star            <- exVarSort ctx ex
   , Just (left, right)   <- hole (FcExSort ex Star) ctx
-  = do
-      tell' "ProdIntro-Extl"
+  = withRule "ProdIntro-Extl" 
+  $ do
       a'1 <- freshEx
       a'2 <- freshEx
 
@@ -933,7 +992,8 @@ check' ctx ep ty prin
           a'2s  = FcExSort a'2 Star
           ctx'  = left <> Ctx [a'1s, a'2s, a'eq] <> right
 
-      delta <- check ctx' ep (TyExVar a'1) Slash
+      theta <- check ctx' e1 (TyExVar a'1) Slash
+      delta <- check theta e2 (substituteCtx theta (TyExVar a'2)) Slash
       pure delta
 
   ------------------------------------------------------------------------------
@@ -941,7 +1001,14 @@ check' ctx ep ty prin
   --
   -- Case expressions, which are pattern vectors with bodies of some given type.
   ------------------------------------------------------------------------------
-
+  | EpCase e alts <- ep
+  = withRule "Case" 
+  $ do
+      let gamma = ctx
+      (a, Bang, delta) <- infer ctx e
+      -- TODO continue from here
+      pure delta
+  
   ------------------------------------------------------------------------------
   -- [Rule: Sub]
   --
@@ -957,7 +1024,7 @@ check' ctx ep ty prin
   | e <- ep
   , b <- ty
   , polB <- polarity b
-  = do tell' "Sub"
+  = withRule "Sub" $ do
        (a, q, theta) <- infer ctx e
        checkSubtype theta polB a b
 
@@ -967,7 +1034,16 @@ check' ctx ep ty prin
 -- | Given a context and an expression, infer its type, a principality for it,
 -- and an updated context.
 infer :: Ctx -> Expr -> TcM (Ty, Prin, Ctx)
-infer ctx ep = case ep of
+infer ctx ep = do
+  r@(ty, p, ctx') <- logRecurRule " infer : " (infer' ctx ep)
+  logText ("  expr : " <> pprExpr ep)
+  logChanging "   ctx : " pprCtx ctx ctx'
+  logText ("  type : " <> pprTy ty)
+  logText ("  prin : " <> pprPrin p)
+  pure r
+
+infer' :: Ctx -> Expr -> TcM ((Ty, Prin, Ctx), Text)
+infer' ctx ep = case ep of
 
   ------------------------------------------------------------------------------
   -- [Rule: Var]
@@ -978,8 +1054,9 @@ infer ctx ep = case ep of
   -- that tells us its type (principality included).
   ------------------------------------------------------------------------------
 
-  EpVar var | Just (ty, prin) <- varTyPrin ctx var
-    -> pure (substituteCtx ctx ty, prin, ctx)
+  EpVar var
+    | Just (ty, prin) <- varTyPrin ctx var -> withRule "Var" $ do
+    pure (substituteCtx ctx ty, prin, ctx)
 
   ------------------------------------------------------------------------------
   -- [Rule: Anno]
@@ -990,9 +1067,10 @@ infer ctx ep = case ep of
   -- annotation.
   ------------------------------------------------------------------------------
 
-  EpAnn e a | prinTypeWF ctx a Bang
-    -> do delta <- check ctx e (substituteCtx ctx a) Bang
-          pure (substituteCtx delta a, Bang, delta)
+  EpAnn e a
+    | prinTypeWF ctx a Bang -> withRule "Anno" $ do
+    delta <- check ctx e (substituteCtx ctx a) Bang
+    pure (substituteCtx delta a, Bang, delta)
 
   ------------------------------------------------------------------------------
   -- [Rule: ArrowE]
@@ -1001,10 +1079,11 @@ infer ctx ep = case ep of
   -- possible.
   ------------------------------------------------------------------------------
 
-  EpApp e spine | Spine [_] <- spine
-    -> do (a, p, theta) <- infer ctx e
-          (c, q, delta) <- inferSpineRecover theta spine a p
-          pure (c, q, delta)
+  EpApp e spine
+    | Spine [_] <- spine -> withRule "ArrowE" $ do
+    (a, p, theta) <- infer ctx e
+    (c, q, delta) <- inferSpineRecover theta spine a p
+    pure (c, q, delta)
 
 
   _ -> throwError ("infer: don't know how to infer type of" <+> pprExpr ep)
@@ -1060,8 +1139,30 @@ inferSpine
          , Prin --   inferred principality of application
          , Ctx  --   output context
          )      -- ^ judgment
+inferSpine ctx sp ty p = do
+  r@(ty', p', ctx') <- logRecurRule "  infsp : " (inferSpine' ctx sp ty p)
+  logText ("  spine : " <> pprSpine sp)
+  logText (" exprty : " <> pprTyWithPrin ty p)
+  logChanging "    ctx : " pprCtx ctx ctx'
+  logText ("  appty : " <> pprTyWithPrin ty' p')
+  pure r
 
-inferSpine ctx sp ty p
+logUnchanged = logText' "±"
+
+logChanging label ppr pre post =
+  if pre == post then
+    logUnchanged (label <> ppr pre)
+  else do
+    logAnte (label <> ppr pre)
+    logPost (label <> ppr post)
+
+inferSpine'
+  :: Ctx        
+  -> Spine     
+  -> Ty       
+  -> Prin       
+  -> TcM ((Ty, Prin, Ctx), Text)
+inferSpine' ctx sp ty p
 
   ------------------------------------------------------------------------------
   -- [Rule: ForallSpine]
@@ -1074,7 +1175,8 @@ inferSpine ctx sp ty p
   | TyForall alpha k a <- ty
   , Spine (e : s)      <- sp
   , alpha'             <- unToEx alpha
-  = do (c, q, delta)   <- inferSpine (ctx |> FcExSort alpha' k) sp
+  = withRule "ForallSpine"
+  $ do (c, q, delta)   <- inferSpine (ctx |> FcExSort alpha' k) sp
                                      (existentializeTy alpha a) Slash
        pure (c, q, delta)
 
@@ -1091,7 +1193,8 @@ inferSpine ctx sp ty p
   | TyImplies prop a <- ty
   , Spine (e : s) <- sp
   , theta <- checkProp ctx prop
-  = do (c, q, delta) <- inferSpine theta sp (substituteCtx theta a) p
+  = withRule "ImpliesSpine"
+  $ do (c, q, delta) <- inferSpine theta sp (substituteCtx theta a) p
        pure (c, q, delta)
 
   ------------------------------------------------------------------------------
@@ -1102,7 +1205,8 @@ inferSpine ctx sp ty p
   ------------------------------------------------------------------------------
 
   | Spine [] <- sp
-  = pure (ty, p, ctx)
+  = withRule "EmptySpine"
+  $ pure (ty, p, ctx)
 
   ------------------------------------------------------------------------------
   -- [Rule: ArrowSpine]
@@ -1113,7 +1217,8 @@ inferSpine ctx sp ty p
   | TyArrow a b <- ty
   , Spine (e : s') <- sp
   , s <- Spine s'
-  = do 
+  = withRule "ArrowSpine"
+  $ do
     -- match the "function" against the input type a
     theta <- check ctx e a p
     -- match the "argument" against the output type b
@@ -1129,15 +1234,16 @@ inferSpine ctx sp ty p
 
   | TyExVar ex@a' <- ty
   , Spine (e : s') <- sp
-  , Just Star            <- exVarSort ctx ex
-  , Just (left, right)   <- hole (FcExSort ex Star) ctx
-  = do
+  = withRule "Spine-Extl"
+  $ do
+      Just Star            <- pure (exVarSort ctx ex)
+      Just (left, right)   <- pure (hole (FcExSort ex Star) ctx)
       a'1 <- freshEx
       a'2 <- freshEx
 
-      let 
+      let
         arrowMType = TmExVar a'1 `TmArrow` TmExVar a'2
-        arrowType = TyExVar a'1 `TyArrow` TyExVar a'2
+        arrowType  = TyExVar a'1 `TyArrow` TyExVar a'2
         a'eq  = FcExEq a' Star arrowMType
         a'1s  = FcExSort a'1 Star
         a'2s  = FcExSort a'2 Star
@@ -1149,11 +1255,20 @@ inferSpine ctx sp ty p
   | otherwise
   = throwError "inferSpine: the likely-impossible happened"
 
+
+inferSpineRecover ctx sp ty p = do
+  r@(ty', p', ctx') <- logRecurRule "  recsp : " (inferSpineRecover' ctx sp ty p)
+  logText ("  spine : " <> pprSpine sp)
+  logText (" exprty : " <> pprTyWithPrin ty p)
+  logChanging "    ctx : " pprCtx ctx ctx'
+  logText ("  appty : " <> pprTyWithPrin ty' p')
+  pure r
+
 -- | Infer the type of a spine application. Additionally, this form
 -- attempts to recover principality in the output type.
 
-inferSpineRecover :: Ctx -> Spine -> Ty -> Prin -> TcM (Ty, Prin, Ctx)
-inferSpineRecover ctx s a p = do
+inferSpineRecover' :: Ctx -> Spine -> Ty -> Prin -> TcM ((Ty, Prin, Ctx), Text)
+inferSpineRecover' ctx s a p = do
 
   ------------------------------------------------------------------------------
   -- [Rule: SpineRecover]
@@ -1164,8 +1279,8 @@ inferSpineRecover ctx s a p = do
 
   res1 <- inferSpine ctx s a Bang
   case res1 of
-    (c, Slash, delta) | noFreeExtls c -> pure (c, Bang, delta)
-    _ -> do
+    (c, Slash, delta) | noFreeExtls c -> withRule "SpineRecover" (pure (c, Bang, delta))
+    _ -> withRule "SpinePass" $ do
 
   ------------------------------------------------------------------------------
   -- [Rule: SpinePass]
@@ -1293,13 +1408,16 @@ pprExVar (ExSym s) = s <> "^"
 
 (<+>) a b = a <> " " <> b
 
+pprTyWithPrin :: Ty -> Prin -> Text
+pprTyWithPrin ty p = parens (pprPrin p) <> " " <> pprTy ty
+
 pprTy :: Ty -> Text
 pprTy = \case
   TyUnit -> "Unit"
   TyUnVar un -> pprUnVar un
   TyExVar ex -> pprExVar ex
   TyBinop l op r  -> pprTy l <+> pprBin op <+> pprTy r
-  TyForall s sort ty -> "∀" <> pprUnVar s <> ". " <> pprTy ty
+  TyForall s sort ty -> "∀ " <> pprUnVar s <> ". " <> pprTy ty
   ty -> tshow ty
 
 pprTm :: Tm -> Text
@@ -1330,20 +1448,27 @@ pprFact' = \case
   FcPropMark prop -> "▶" <> pprProp prop
   FcVarTy var ty prin -> pprVar var <> " : " <> pprTy ty <+> pprPrin prin
 
+pprSpine :: Spine -> Text
+pprSpine = tshow
+
 pprFact :: Fact -> Text
 pprFact f = "[" <> pprFact' f <> "]"
 
 pprVar :: Var -> Text
 pprVar (Sym s) = s
 
+parens :: Text -> Text
+parens t = "(" <> t <> ")"
+
 pprExpr :: Expr -> Text
 pprExpr = \case
   EpUnit -> "Unit"
   EpLam var e -> "λ" <> pprVar var <> ". "  <> pprExpr e
-  EpAnn e ty -> pprExpr e <> " : " <> pprTy ty
+  EpAnn e ty -> parens (pprExpr e <> " : " <> pprTy ty)
   EpVar (Sym x) -> x
-  EpApp e (Spine s) -> "(" <> T.unwords (map pprExpr (e : s)) <> ")"
-  e -> tshow e
+  EpApp e (Spine s) -> parens (T.unwords (map pprExpr (e : s)))
+  EpProd l r -> parens (pprExpr l <+> pprBin OpProd <+> pprExpr r)
+  e -> parens (tshow e)
 
 pprPrin :: Prin -> Text
 pprPrin Bang = "!"
@@ -1369,23 +1494,36 @@ execTcM action = result
 tests :: IO ()
 tests = hspec tests'
 
+eTermSort :: Tm -> Either Text Sort
 eTermSort = execTcM . termSort initialContext
 
-tests' = 
+tests' :: SpecWith ()
+tests' =
   describe "inferring the sort of a term (`termSort`)" $ do
-    context "given an existential variable" $ do
-      it "fails if the variable is unknown" $ do
-        eTermSort (TmExVar (ExSym "foo")) `shouldSatisfy` (isn't _Right)
+    context "given an existential variable" $ 
+      it "fails if the variable is unknown" $ 
+        eTermSort (TmExVar (ExSym "foo")) `shouldSatisfy` isn't _Right
 
-    it "sort of Unit is Star" $ do
+    it "sort of Unit is Star" $ 
       eTermSort TmUnit `shouldBe` Right Star
 
-    it "sort of Unit -> Unit is Star" $ do
+    it "sort of Unit -> Unit is Star" $ 
       eTermSort (TmUnit `TmArrow` TmUnit) `shouldBe` Right Star
 
 idExpr :: Expr
 idExpr = EpLam x (EpVar x)
   where x = Sym "x"
+
+-- Bool ~ Either () ()
+eTrue, eFalse :: Expr
+eTrue  = EpInj InjR EpUnit
+eFalse = EpInj InjL EpUnit
+
+eIf :: Expr -> Expr -> Expr -> Expr
+eIf cond t f
+  = EpCase cond 
+  ( Alts [Branch [PatInj InjL EpUnit] t, Branch [PatInj InjR EpUnit] f]
+  )
 
 idType :: Ty
 idType = TyForall ua Star (TyArrow uv uv)
@@ -1393,8 +1531,23 @@ idType = TyForall ua Star (TyArrow uv uv)
     ua = UnSym "t"
     uv = TyUnVar ua
 
+constType :: Ty
+constType = TyForall ua Star (TyForall ub Star (TyArrow va (TyArrow vb va)))
+  where
+    ua = UnSym "a"
+    ub = UnSym "b"
+    va = TyUnVar ua
+    vb = TyUnVar ub
+
 idCtx :: Ctx
-idCtx = initialContext |> FcVarTy (Sym "id") idType Bang
+idCtx 
+  = initialContext 
+  |> FcVarTy (Sym "id") idType Bang
+  |> FcVarTy (Sym "const") constType Bang
 
 idApp :: Expr
-idApp = EpApp (EpVar (Sym "id")) (Spine [EpUnit])
+idApp = EpApp (EpVar (Sym "const")) (Spine [EpUnit])
+
+bigStep :: Ctx -> Expr -> TcM Expr
+bigStep _ EpUnit = pure EpUnit
+bigStep ctx (EpProd a b) = EpProd <$> bigStep ctx a <*> bigStep ctx b

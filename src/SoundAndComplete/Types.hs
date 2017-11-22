@@ -21,10 +21,8 @@ module SoundAndComplete.Types where
 
 import Overture hiding (set, pred, sum)
 
-import Data.Sequence (Seq, pattern (:<|), pattern (:|>))
+import Data.Sequence (Seq)
 import qualified Data.Sequence as S
-
-import Data.Hashable
 
 --
 -- Representations of types and terms for algorithmic typing.
@@ -63,8 +61,10 @@ isValue _ = unimplemented
 data Inj = InjL | InjR
   deriving (Show, Ord, Eq, Generic, Data)
 
-pattern EpInjL, EpInjR :: Expr -> Expr
+pattern EpInjL :: Expr -> Expr
 pattern EpInjL e = EpInj InjL e
+
+pattern EpInjR :: Expr -> Expr
 pattern EpInjR e = EpInj InjR e
 
 data Spine = Spine [Expr]

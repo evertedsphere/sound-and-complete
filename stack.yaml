@@ -1,0 +1,16 @@
+resolver: nightly-2017-11-18
+
+nix:
+  enable: true
+  packages:
+    - zlib
+
+packages:
+- .
+
+extra-deps: []
+
+flags: {}
+
+extra-package-dbs: []
+
