@@ -950,9 +950,24 @@ check' ctx ep ty prin
   -- Introduction form for checking a sum expression against an unknown type.
   ------------------------------------------------------------------------------
 
-  | EpInj inj e <- ep
+  | p <- Slash
+  , EpInj inj e <- ep
   , TyExVar a'  <- ty
-  = throwError "SumIntro-Extlₖ"
+  , Just Star   <- exVarSort ctx a'
+  , Just (left, right) <- hole (FcExSort a' Star) ctx
+  = withRule "SumIntro-Extlₖ"
+  $ do throwError ""
+       a'1 <- freshEx
+       a'2 <- freshEx
+
+       let a'k = if inj == InjL then a'1 else a'2
+           a'eq  = FcExEq a' Star (TmExVar a'1 `TmProd` TmExVar a'2)
+           a'1s  = FcExSort a'1 Star
+           a'2s  = FcExSort a'2 Star
+           ctx'  = left <> Ctx [a'1s, a'2s, a'eq] <> right
+
+       delta <- check ctx' e (TyExVar a'k) Slash
+       pure delta
 
   -- TODO
   -- should we add, e.g. an EpInj case here that catches everything falling
@@ -1545,9 +1560,13 @@ idCtx
   |> FcVarTy (Sym "id") idType Bang
   |> FcVarTy (Sym "const") constType Bang
 
+constApp :: Expr
+constApp = EpApp (EpVar (Sym "const")) (Spine [EpUnit])
+
 idApp :: Expr
-idApp = EpApp (EpVar (Sym "const")) (Spine [EpUnit])
+idApp = EpApp (EpVar (Sym "const")) (Spine [EpProd EpUnit EpUnit])
 
 bigStep :: Ctx -> Expr -> TcM Expr
-bigStep _ EpUnit = pure EpUnit
-bigStep ctx (EpProd a b) = EpProd <$> bigStep ctx a <*> bigStep ctx b
+bigStep ctx = \case
+  EpUnit -> pure EpUnit
+  EpProd a b -> EpProd <$> bigStep ctx a <*> bigStep ctx b
