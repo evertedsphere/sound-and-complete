@@ -389,7 +389,7 @@ typeWF ctx ty
   = throwError "366"
 
 prinTypeWF :: Ctx -> Ty -> Prin -> Bool
-prinTypeWF = error "prinTypeWF"
+prinTypeWF ctx ty p = True -- FIXME
 
 ctxWF :: Ctx -> Bool
 ctxWF (Ctx s)
@@ -619,10 +619,10 @@ checkSubtype' ctx p a b  = case p of
   --------------------------------------------------------------------------
   -- [Rules: Subtype-MinusPlus-L and Subtype-MinusPlus-R]
   --------------------------------------------------------------------------
-  Positive -> do
+  Positive -> withRule "Subtype-MinusPlus-*" $ do
     -- TODO Add Subtype-Exists-(L|R)
     unless (negNonpos a b) (throwError "subtyping fail: not negNonpos")
-    withRule "Subtype-MinusPlus-*" (checkSubtype ctx Negative a b)
+    checkSubtype ctx Negative a b
 
   --------------------------------------------------------------------------
   -- [Rules: Subtype-MinusPlus-L and Subtype-MinusPlus-R]
@@ -637,9 +637,9 @@ checkSubtype' ctx p a b  = case p of
   --
   -- We don't check the polarity in this case.
   ------------------------------------------------------------------------------
-  Nonpolar -> do
+  Nonpolar -> withRule "SubtypeEquiv" $ do
     unless ((a, b) & allOf each notQuantifierHead) (throwError "nonpolar")
-    withRule "SubtypeEquiv" (typeEquiv ctx a b)
+    typeEquiv ctx a b
 
 -- | Instantiate an existential variable.
 instExVar :: Ctx -> ExVar -> Tm -> Sort -> TcM Ctx
@@ -1017,10 +1017,14 @@ check' ctx ep ty prin
   -- Case expressions, which are pattern vectors with bodies of some given type.
   ------------------------------------------------------------------------------
   | EpCase e alts <- ep
+  , _C <- ty
+  , p <- prin
   = withRule "Case" 
   $ do
       let gamma = ctx
-      (a, Bang, delta) <- infer ctx e
+      (_A, Bang, theta) <- infer ctx e
+      delta <- matchBranches theta alts [substituteCtx theta _A] _C p
+      True <- pure (coverageCheck delta alts [substituteCtx delta _A])
       -- TODO continue from here
       pure delta
   
@@ -1137,6 +1141,15 @@ unToEx (UnSym sym) = ExSym sym
 exToUn :: ExVar -> UnVar
 exToUn (ExSym sym) = UnSym sym
 
+logUnchanged = logText' "±"
+
+logChanging label ppr pre post =
+  if pre == post then
+    logUnchanged (label <> ppr pre)
+  else do
+    logAnte (label <> ppr pre)
+    logPost (label <> ppr post)
+
 -- | Infer the type of a spine application. This form does not attempt to
 -- recover principality in the synthesized type.
 --
@@ -1161,15 +1174,6 @@ inferSpine ctx sp ty p = do
   logChanging "    ctx : " pprCtx ctx ctx'
   logText ("  appty : " <> pprTyWithPrin ty' p')
   pure r
-
-logUnchanged = logText' "±"
-
-logChanging label ppr pre post =
-  if pre == post then
-    logUnchanged (label <> ppr pre)
-  else do
-    logAnte (label <> ppr pre)
-    logPost (label <> ppr post)
 
 inferSpine'
   :: Ctx        
@@ -1259,10 +1263,10 @@ inferSpine' ctx sp ty p
       let
         arrowMType = TmExVar a'1 `TmArrow` TmExVar a'2
         arrowType  = TyExVar a'1 `TyArrow` TyExVar a'2
+        a'1s  = exStar a'1
+        a'2s  = exStar a'2
         a'eq  = FcExEq a' Star arrowMType
-        a'1s  = FcExSort a'1 Star
-        a'2s  = FcExSort a'2 Star
-        ctx'  = left <> Ctx [a'1s, a'2s, a'eq] <> right
+        ctx'  = solveHole left right [a'1s, a'2s, a'eq]
 
       delta <- check ctx' e (TyExVar a'1) Slash
       pure (arrowType, p, delta)
@@ -1270,6 +1274,11 @@ inferSpine' ctx sp ty p
   | otherwise
   = throwError "inferSpine: the likely-impossible happened"
 
+exStar :: ExVar -> Fact
+exStar ex = FcExSort ex Star
+
+solveHole :: Ctx -> Ctx -> Seq Fact -> Ctx
+solveHole l r fs = l <> Ctx fs <> r
 
 inferSpineRecover ctx sp ty p = do
   r@(ty', p', ctx') <- logRecurRule "  recsp : " (inferSpineRecover' ctx sp ty p)
@@ -1311,8 +1320,78 @@ inferSpineRecover' ctx s a p = do
           -> pure res
         _ -> throwError "is this even possible?"
 
-checkBranches :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> Ctx
-checkBranches = error "checkBranches"
+-- | Check case-expressions.
+-- Wrapper for @matchBranches'@.
+matchBranches :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
+matchBranches ctx alts ts ty p = do
+  (ctx, r) <- matchBranches' ctx alts ts ty p
+  pure ctx
+
+-- | Check case-expressions.
+-- Given an input context, a case-expression, a type-vector, and a 
+-- type/prin pair, attempt to match the case-expr/typevec against the
+-- type with the given principality, returning an updated output context.
+matchBranches' :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM (Ctx, Text)
+
+------------------------------------------------------------------------------
+-- [Rule: MatchEmpty]
+------------------------------------------------------------------------------
+matchBranches' gamma (Alts []) _ _ _ = withRule "MatchEmpty" $ 
+  pure gamma
+
+------------------------------------------------------------------------------
+-- [Rule: MatchBase]
+--
+-- A case-expression with one branch which in turn has no patterns, given
+-- an empty type-vector, matches against a type/prin pair if the RHS of the
+-- only branch checks against it.
+------------------------------------------------------------------------------
+matchBranches' gamma (Alts [Branch [] e]) [] _C p = withRule "MatchBase" $ do
+  delta <- check gamma e _C p
+  pure delta
+
+------------------------------------------------------------------------------
+-- [Rule: MatchUnit]
+--
+-- FIXME[paper]: The paper doesn't seem to allow () in patterns.
+------------------------------------------------------------------------------
+matchBranches' gamma (Alts [Branch (PatUnit:ps) e]) (TyUnit:ts) ty p = withRule "Match" $ do 
+  delta <- matchBranches gamma (Alts [Branch ps e]) ts ty p
+  pure delta 
+
+------------------------------------------------------------------------------
+-- [Rule: MatchPlus_k]
+--
+-- Match an "Either" pattern.
+------------------------------------------------------------------------------
+matchBranches' gamma (Alts [Branch (PatInj k rho:ps) e]) (TySum _A1 _A2 : _As) ty p = withRule "Match" $ do 
+  let _Ak = if k == InjL then _A1 else _A2
+  delta <- matchBranches gamma (Alts [Branch (rho:ps) e]) (_Ak:_As) ty p
+  pure delta
+
+--------------------------------------------------------------------------------
+---- [Rule: Match]
+----
+--------------------------------------------------------------------------------
+--matchBranches' ctx (Alts [Branch ps e]) ts ty p = withRule "Match" $ do pure ctx
+
+--------------------------------------------------------------------------------
+---- [Rule: Match]
+----
+--------------------------------------------------------------------------------
+--matchBranches' ctx (Alts [Branch ps e]) ts ty p = withRule "Match" $ do pure ctx
+
+------------------------------------------------------------------------------
+-- [Rule: MatchSeq]
+--
+------------------------------------------------------------------------------
+matchBranches' gamma (Alts (pi : _Pi)) _A _C p = withRule "MatchSeq" $ do 
+  theta <- matchBranches gamma (Alts [pi]) _A _C p
+  delta <- matchBranches theta (Alts _Pi) _A _C p
+  pure delta
+
+-- -- | Check case-expressions with a single branch (essentially a let?)
+-- matchBranch :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM (Ctx, Text)
 
 --------------------------------------------------------------------------------
 -- [Coverage checking]
@@ -1537,8 +1616,14 @@ eFalse = EpInj InjL EpUnit
 eIf :: Expr -> Expr -> Expr -> Expr
 eIf cond t f
   = EpCase cond 
-  ( Alts [Branch [PatInj InjL EpUnit] t, Branch [PatInj InjR EpUnit] f]
+  ( Alts [Branch [PatInj InjL PatUnit] t, Branch [PatInj InjR PatUnit] f]
   )
+
+ifExpr :: Expr
+ifExpr = eIf (EpAnn eTrue (TySum TyUnit TyUnit)) eFalse eTrue
+
+idUnit :: Expr
+idUnit = EpCase (EpAnn EpUnit TyUnit) (Alts [Branch [PatVar (Sym "x")] EpUnit])
 
 idType :: Ty
 idType = TyForall ua Star (TyArrow uv uv)

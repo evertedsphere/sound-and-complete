@@ -75,9 +75,11 @@ data Alts = Alts [Branch]
 
 -- | Patterns
 data Pat
-  = PatVar   Var
-  | PatProd  Expr  Expr
-  | PatInj   Inj   Expr
+  = PatWild  -- not shown in Figure 1
+  | PatUnit  -- not shown in Figure 1
+  | PatVar   Var
+  | PatProd  Pat   Pat
+  | PatInj   Inj   Pat
   | PatVec   (Vec Pat)
   deriving (Show, Ord, Eq, Generic, Data)
 
