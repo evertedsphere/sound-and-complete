@@ -540,11 +540,12 @@ headConClash a b
 -- Nothing signifies inequivalence.
 -- TODO better representation?
 propEquiv :: Ctx -> Prop -> Prop -> TcM Ctx
-propEquiv = error "propEquiv"
+propEquiv _ _ _ = throwError "propEquiv"
 
 -- | Check two types for equivalence.
 typeEquiv :: Ctx -> Ty -> Ty -> TcM Ctx
-typeEquiv = error "typeEquiv"
+typeEquiv ctx TyUnit TyUnit = pure ctx
+typeEquiv _ _ _ = throwError "boom"
 
 _TyExVar :: Prism' Ty ExVar
 _TyExVar = prism' TyExVar (\case
@@ -1427,7 +1428,12 @@ matchBranch' gamma (Branch ps e) ts t p = withRule "default" $ error "foo"
 -- types in [A..].
 
 coverageCheck :: Ctx -> Alts -> [Ty] -> TcM Bool
-coverageCheck ctx alts tys
+coverageCheck ctx alts tys = do
+  -- liftIO (putStrLn ("cov : " ++ show (ctx,alts,tys)))
+  coverageCheck' ctx alts tys
+
+coverageCheck' :: Ctx -> Alts -> [Ty] -> TcM Bool
+coverageCheck' ctx alts tys
 
   ------------------------------------------------------------------------------
   -- [Rule: CoversEmpty]
@@ -1458,7 +1464,28 @@ coverageCheck ctx alts tys
   ------------------------------------------------------------------------------
 
   | otherwise
-  = error "coverage"
+  = pure True --error "coverage"
+
+prepareUnitAlts :: Alts -> TcM Alts
+prepareUnitAlts (Alts bs) = do
+  liftIO (print "prepareUnitAlts")
+  Alts <$> prepareUnitAlts' bs
+
+  where
+    prepareUnitAlts' :: [Branch] -> TcM [Branch]
+    prepareUnitAlts' = \case
+      [] -> pure []
+      Branch (r:rs) e : _Pi -> do
+        unless (ok r) (throwError "fail")
+        _Pi' <- prepareUnitAlts' _Pi
+        pure (Branch rs e : _Pi')
+
+      where 
+        ok = \case
+          PatVar{} -> False
+          PatWild  -> False
+          PatUnit  -> False
+          _        -> True
 
 -- | This implements the second of the two coverage-checking judgments, which
 -- takes a proposition into account.
