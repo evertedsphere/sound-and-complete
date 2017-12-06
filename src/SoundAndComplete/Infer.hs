@@ -58,6 +58,7 @@ import qualified Data.Sequence as S
 import qualified Data.Map as M
 
 import qualified Data.Text.Lazy as T
+import qualified Data.Text.Lazy.IO as T
 
 import SoundAndComplete.Types
 import Test.Hspec
@@ -113,7 +114,7 @@ newtype TcM a
   = TcM { runTcM :: ExceptT Text
                       (ReaderT TcConfig
                         (WriterT' [Text]
-                          (State TcState))) a }
+                          (StateT TcState IO))) a }
   deriving
    ( Functor
    , Applicative
@@ -122,6 +123,7 @@ newtype TcM a
    , MonadReader TcConfig
    , MonadWriter [Text]
    , MonadState  TcState
+   , MonadIO
    )
 
 -- lctx :: Lens' TcState (Seq Fact)
@@ -149,6 +151,13 @@ ppCheck = typecheck' pp
 
 typecheck' :: (a -> IO ()) -> TcM a -> IO ()
 typecheck' f action = do
+  ((result, tcLog), finalState) <-
+        action
+      & runTcM
+      & runExceptT
+      & (runReaderT ?? initialConfig)
+      & runWriterT'
+      & (runStateT ?? initialState)
   case result of
     Left err -> do
       putTextLn "Error while typechecking: "
@@ -166,13 +175,6 @@ typecheck' f action = do
   putTextLn "Done.\n---"
 
   where
-    ((result, tcLog), finalState)
-      = action
-      & runTcM
-      & runExceptT
-      & (runReaderT ?? initialConfig)
-      & runWriterT'
-      & (runState ?? initialState)
 
 -- | Filter a context for a fact that satisfies a predicate.
 factWith :: (Fact -> Bool) -> Ctx -> Maybe Fact
@@ -724,7 +726,9 @@ logPost = logText' "+"
 logText' :: Text -> Text -> TcM ()
 logText' t x = do
   indent <- view logIndent
-  tell [T.replicate (fromIntegral indent) " " <> t <> " " <> x]
+  let msg = T.replicate (fromIntegral indent) " " <> t <> " " <> x
+  liftIO (T.putStrLn msg)
+  -- tell [msg]
 
 logRecur action = do
   incr <- view logIncrement
@@ -1024,7 +1028,7 @@ check' ctx ep ty prin
       let gamma = ctx
       (_A, Bang, theta) <- infer ctx e
       delta <- matchBranches theta alts [substituteCtx theta _A] _C p
-      True <- pure (coverageCheck delta alts [substituteCtx delta _A])
+      True <- coverageCheck delta alts [substituteCtx delta _A]
       -- TODO continue from here
       pure delta
   
@@ -1324,7 +1328,9 @@ inferSpineRecover' ctx s a p = do
 -- Wrapper for @matchBranches'@.
 matchBranches :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
 matchBranches ctx alts ts ty p = do
-  (ctx, r) <- matchBranches' ctx alts ts ty p
+  ctx' <- logRecurRule "  match : " (matchBranches' ctx alts ts ty p)
+  logText    ("     ty : " <> pprTyWithPrin ty p)
+  logChanging "    ctx : " pprCtx ctx ctx'
   pure ctx
 
 -- | Check case-expressions.
@@ -1350,31 +1356,6 @@ matchBranches' gamma (Alts [Branch [] e]) [] _C p = withRule "MatchBase" $ do
   delta <- check gamma e _C p
   pure delta
 
-------------------------------------------------------------------------------
--- [Rule: MatchUnit]
---
--- FIXME[paper]: The paper doesn't seem to allow () in patterns.
-------------------------------------------------------------------------------
-matchBranches' gamma (Alts [Branch (PatUnit:ps) e]) (TyUnit:ts) ty p = withRule "Match" $ do 
-  delta <- matchBranches gamma (Alts [Branch ps e]) ts ty p
-  pure delta 
-
-------------------------------------------------------------------------------
--- [Rule: MatchPlus_k]
---
--- Match an "Either" pattern.
-------------------------------------------------------------------------------
-matchBranches' gamma (Alts [Branch (PatInj k rho:ps) e]) (TySum _A1 _A2 : _As) ty p = withRule "Match" $ do 
-  let _Ak = if k == InjL then _A1 else _A2
-  delta <- matchBranches gamma (Alts [Branch (rho:ps) e]) (_Ak:_As) ty p
-  pure delta
-
---------------------------------------------------------------------------------
----- [Rule: Match]
-----
---------------------------------------------------------------------------------
---matchBranches' ctx (Alts [Branch ps e]) ts ty p = withRule "Match" $ do pure ctx
-
 --------------------------------------------------------------------------------
 ---- [Rule: Match]
 ----
@@ -1386,12 +1367,44 @@ matchBranches' gamma (Alts [Branch (PatInj k rho:ps) e]) (TySum _A1 _A2 : _As) t
 --
 ------------------------------------------------------------------------------
 matchBranches' gamma (Alts (pi : _Pi)) _A _C p = withRule "MatchSeq" $ do 
-  theta <- matchBranches gamma (Alts [pi]) _A _C p
+  theta <- matchBranch gamma pi _A _C p
   delta <- matchBranches theta (Alts _Pi) _A _C p
   pure delta
 
--- -- | Check case-expressions with a single branch (essentially a let?)
--- matchBranch :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM (Ctx, Text)
+-- | Check case-expressions with a single branch (essentially a let?)
+matchBranch :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
+matchBranch ctx b ts ty p = do
+  -- liftIO (print (b,ts,ty,p))
+  (ctx, r) <- matchBranch' ctx b ts ty p
+  pure ctx
+
+-- | Check case-expressions with a single branch (essentially a let?)
+matchBranch' :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM (Ctx, Text)
+------------------------------------------------------------------------------
+-- [Rule: MatchUnit]
+--
+-- FIXME[paper]: The paper doesn't seem to allow () in patterns.
+------------------------------------------------------------------------------
+matchBranch' gamma (Branch (PatUnit:ps) e) (TyUnit:ts) ty p = withRule "MatchUnit" $ do 
+  delta <- matchBranches gamma (Alts [Branch ps e]) ts ty p
+  pure delta 
+
+------------------------------------------------------------------------------
+-- [Rule: MatchPlus_k]
+--
+-- Match an "Either" pattern.
+------------------------------------------------------------------------------
+matchBranch' gamma (Branch (PatInj k rho:ps) e) (TySum _A1 _A2 : _As) ty p = withRule "MatchPlus_k" $ do 
+  let _Ak = if k == InjL then _A1 else _A2
+  delta <- matchBranches gamma (Alts [Branch (rho:ps) e]) (_Ak:_As) ty p
+  pure delta
+
+matchBranch' gamma (Branch (PatWild:ps) e) (_A : _As) _C p = withRule "MatchWild" $ do 
+  unless (notQuantifierHead _A) (throwError "quantifier-headed type")
+  delta <- matchBranches gamma (Alts [Branch ps e]) _As _C p
+  pure delta
+
+matchBranch' gamma (Branch ps e) ts t p = withRule "default" $ error "foo"
 
 --------------------------------------------------------------------------------
 -- [Coverage checking]
@@ -1413,7 +1426,7 @@ matchBranches' gamma (Alts (pi : _Pi)) _A _C p = withRule "MatchSeq" $ do
 -- in the paper. This means that, in context Γ, the patterns Π cover the
 -- types in [A..].
 
-coverageCheck :: Ctx -> Alts -> [Ty] -> Bool
+coverageCheck :: Ctx -> Alts -> [Ty] -> TcM Bool
 coverageCheck ctx alts tys
 
   ------------------------------------------------------------------------------
@@ -1421,8 +1434,8 @@ coverageCheck ctx alts tys
   ------------------------------------------------------------------------------
 
   | [] <- tys
-  , Alts (Branch [] e : _) <- alts
-  = True
+  , Alts (Branch [] _e1 : _Pi) <- alts
+  = pure True
 
   ------------------------------------------------------------------------------
   -- [Rule: CoversVar]
@@ -1445,7 +1458,7 @@ coverageCheck ctx alts tys
   ------------------------------------------------------------------------------
 
   | otherwise
-  = error "coverageCheck"
+  = error "coverage"
 
 -- | This implements the second of the two coverage-checking judgments, which
 -- takes a proposition into account.
@@ -1574,35 +1587,35 @@ pprCtx (Ctx s) = s & toList & map pprFact & T.unwords
 pprProp :: Prop -> Text
 pprProp (Equation a b) = "<" <> pprTm a <> " = " <> pprTm b <> ">"
 
-execTcM :: TcM a -> Either Text a
-execTcM action = result
-  where
-    ((result, tcLog), finalState)
-      = action
-      & runTcM
-      & runExceptT
-      & (runReaderT ?? initialConfig)
-      & runWriterT'
-      & (runState ?? initialState)
+execTcM :: TcM a -> IO (Either Text a)
+execTcM action = do
+  ((result, tcLog), finalState) <-
+      action
+    & runTcM
+    & runExceptT
+    & (runReaderT ?? initialConfig)
+    & runWriterT'
+    & (runStateT ?? initialState)
+  pure result
 
-tests :: IO ()
-tests = hspec tests'
+-- tests :: IO ()
+-- tests = hspec tests'
 
-eTermSort :: Tm -> Either Text Sort
-eTermSort = execTcM . termSort initialContext
+-- eTermSort :: Tm -> Either Text Sort
+-- eTermSort = execTcM . termSort initialContext
 
-tests' :: SpecWith ()
-tests' =
-  describe "inferring the sort of a term (`termSort`)" $ do
-    context "given an existential variable" $ 
-      it "fails if the variable is unknown" $ 
-        eTermSort (TmExVar (ExSym "foo")) `shouldSatisfy` isn't _Right
+-- tests' :: SpecWith ()
+-- tests' =
+--   describe "inferring the sort of a term (`termSort`)" $ do
+--     context "given an existential variable" $ 
+--       it "fails if the variable is unknown" $ 
+--         eTermSort (TmExVar (ExSym "foo")) `shouldSatisfy` isn't _Right
 
-    it "sort of Unit is Star" $ 
-      eTermSort TmUnit `shouldBe` Right Star
+--     it "sort of Unit is Star" $ 
+--       eTermSort TmUnit `shouldBe` Right Star
 
-    it "sort of Unit -> Unit is Star" $ 
-      eTermSort (TmUnit `TmArrow` TmUnit) `shouldBe` Right Star
+--     it "sort of Unit -> Unit is Star" $ 
+--       eTermSort (TmUnit `TmArrow` TmUnit) `shouldBe` Right Star
 
 idExpr :: Expr
 idExpr = EpLam x (EpVar x)
@@ -1622,8 +1635,20 @@ eIf cond t f
 ifExpr :: Expr
 ifExpr = eIf (EpAnn eTrue (TySum TyUnit TyUnit)) eFalse eTrue
 
+-- case Unit : Unit of
+--   _ -> Unit : Unit
+
+match e bs = EpCase e (Alts bs)
+(-:) = EpAnn
+infixr 8 -:
+(~>) p e = Branch [p] e
+infixr 6 ~>
+
 idUnit :: Expr
-idUnit = EpCase (EpAnn EpUnit TyUnit) (Alts [Branch [PatVar (Sym "x")] EpUnit])
+idUnit = match (EpUnit -: TyUnit) 
+  [ PatWild ~> 
+      EpUnit -: TyUnit
+  ]
 
 idType :: Ty
 idType = TyForall ua Star (TyArrow uv uv)
