@@ -67,6 +67,7 @@ import Safe
 
 import Data.Text.Prettyprint.Doc
 import Data.Text.Prettyprint.Doc.Util (putDocW)
+import Data.Generics.Uniplate.Data
 
 --
 -- Typechecker environments
@@ -501,8 +502,22 @@ unify ctx a b
   | headConClash a b
   = pure Bottom
 
+  -- [Rule: ElimeqUVarL]
+  
+  | TmUnVar alpha <- a
+  , alpha `notElem` freeUnivs b
+  , none (isUnEqOf alpha) (toList (let Ctx s = ctx in s))
+  = pure (ConCtx (ctx |> (FcUnEq alpha b)) _)
+
   | otherwise
-  = throwError "unify"
+  = do
+      liftIO (print (a,b))
+      throwError "unify"
+
+isUnEqOf :: UnVar -> Fact -> Bool
+isUnEqOf un = \case
+  FcUnEq lhs _ -> lhs == un -- TODO only check LHS?
+  _ -> False
 
 headConClash :: Tm -> Tm -> Bool
 headConClash a b
@@ -1127,10 +1142,11 @@ freshEx = ExSym <$> fresh
 
 -- | The free existential variables in a type.
 freeExtls :: Ty -> [ExVar]
-freeExtls = \case
-  TyExVar ex -> [ex]
-  TyBinop a _ b -> freeExtls a <> freeExtls b
-  _ -> error "!"
+freeExtls = childrenBi
+
+-- | The free existential variables in a ter.
+freeUnivs :: Tm -> [UnVar]
+freeUnivs = childrenBi
 
 -- | A synonym for @freeExtls@ matching the notation from the paper.
 fev :: Ty -> [ExVar]
@@ -1379,8 +1395,8 @@ matchBranches' gamma (Alts (pi : _Pi)) _A _C p = withRule "MatchSeq" $ do
 matchBranch :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
 matchBranch ctx b ts ty p = do
   -- liftIO (print (b,ts,ty,p))
-  (ctx, r) <- matchBranch' ctx b ts ty p
-  pure ctx
+  logRecurRule "  matchb : " (matchBranch' ctx b ts ty p) `finally` do
+    liftIO (print (b,ts,ty,p))
 
 -- | Check case-expressions with a single branch (essentially a let?)
 matchBranch' :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM (Ctx, Text)
@@ -1408,7 +1424,26 @@ matchBranch' gamma (Branch (PatWild:ps) e) (_A : _As) _C p = withRule "MatchWild
   delta <- matchBranches gamma (Alts [Branch ps e]) _As _C p
   pure delta
 
-matchBranch' gamma (Branch ps e) ts t p = withRule "default" $ error "foo"
+matchBranch' gamma (Branch (PatVec Empty:ps) e) (TyVec t _A : _As) _C p = withRule "MatchNil" $ do 
+  delta <- matchBranchesAssuming gamma (Equation t (TmNat Zero)) (Alts [Branch ps e]) _As _C p
+  pure delta
+
+matchBranch' gamma (Branch ps e) ts t p = withRule "default" $ liftIO (print ps) *> throwError "foo"
+
+matchBranchesAssuming
+  :: Ctx -> Prop -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
+matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p 
+  | length bs /= 1 = throwError "too many branches" 
+  | otherwise = do
+      ctx' <- unify gamma lt rt
+      case ctx' of
+        Bottom -> pure gamma
+        ConCtx{} -> do
+          ConCtx theta sort <- unify (gamma |> FcPropMark prop) lt rt
+          ctx'' <- matchBranches theta alts ts ty p
+          let Just (delta, delta') = hole (FcPropMark prop) ctx''
+          pure delta
+      
 
 --------------------------------------------------------------------------------
 -- [Coverage checking]
@@ -1705,10 +1740,10 @@ mapExpr = EpAnn expr ty
         beta
         Star
         ( TyArrow
-          ( TyArrow (TyArrow (TyUnVar alpha) (TyUnVar beta))
-                    (TyVec (TmUnVar n) (TyUnVar alpha))
+          (TyArrow (TyUnVar alpha) (TyUnVar beta))
+          ( TyArrow (TyVec (TmUnVar n) (TyUnVar alpha))
+                    (TyVec (TmUnVar n) (TyUnVar beta))
           )
-          (TyVec (TmUnVar n) (TyUnVar beta))
         )
       )
     )
