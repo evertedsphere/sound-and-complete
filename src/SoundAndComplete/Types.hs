@@ -1,4 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DeriveFoldable #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE OverloadedLists #-}
@@ -91,6 +94,9 @@ data Nat      = Zero    | Succ Nat          deriving (Show, Ord, Eq, Generic, Da
 
 data Vec   a  = Empty   | Cons a (Vec a)    deriving (Show, Ord, Eq, Generic, Data)
 
+deriving instance Functor Vec 
+deriving instance Foldable Vec 
+
 -- | Terms
 data Tm
   = TmUnit
@@ -104,6 +110,13 @@ data Tm
   deriving (Show, Ord, Eq, Generic, Data)
 
 instance Plated Tm
+
+instance HasTerms Tm where
+  terms f = 
+    \case
+      TmBinop a op b -> TmBinop <$> terms f a <*> pure op <*> terms f b
+      -- TmVec ty -> TmVec <$> terms f n <*> terms f ty
+      o -> pure o
 
 pattern TmBinop :: Tm -> Binop -> Tm -> Tm
 pattern TmBinop left op right <- (binopOfTerm -> Just (left, op, right))
@@ -145,7 +158,7 @@ data Ty
   | TyExists  UnVar Sort Ty
   | TyImplies Prop  Ty
   | TyWith    Ty    Prop
-  | TyVec     Nat   Ty
+  | TyVec     Tm   Ty
   deriving (Show, Ord, Eq, Generic, Data)
 
 instance Plated Ty
@@ -158,11 +171,11 @@ instance HasTerms Ty where
       TyBinop a op b -> TyBinop <$> terms f a <*> pure op <*> terms f b
       TyImplies eq ty -> TyImplies <$> terms f eq <*> terms f ty
       TyWith ty eq -> TyWith <$> terms f ty <*> terms f eq
-      TyVec n ty -> TyVec <$> pure n <*> terms f ty
+      TyVec n ty -> TyVec <$> terms f n <*> terms f ty
       o -> pure o
 
-ty :: Ty
-ty = TyWith (TyArrow TyUnit (TyImplies (Equation TmUnit TmUnit) TyUnit)) (Equation TmUnit TmUnit)
+-- ty :: Ty
+-- ty = TyWith (TyArrow TyUnit (TyImplies (Equation TmUnit TmUnit) TyUnit)) (Equation TmUnit TmUnit)
 
 pattern TyBinop :: Ty -> Binop -> Ty -> Ty
 pattern TyBinop left op right <- (binopOfType -> Just (left, op, right))
