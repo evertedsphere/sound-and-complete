@@ -65,6 +65,9 @@ import SoundAndComplete.Types
 
 import Safe
 
+import Data.Text.Prettyprint.Doc
+import Data.Text.Prettyprint.Doc.Util (putDocW)
+
 --
 -- Typechecker environments
 --
@@ -592,8 +595,6 @@ notForallHead = \case
 notQuantifierHead :: Ty -> Bool
 notQuantifierHead ty = notExistsHead ty && notForallHead ty
 
-withRule r = map (\x -> (x, r))
-
 rethrowAfter :: MonadError e m => m a -> m b -> m a
 rethrowAfter action post = action `catchError` \e -> post *> throwError e
 
@@ -667,8 +668,8 @@ hole mem (Ctx ctx)
   = Just (Ctx left, Ctx right)
 
 -- | Given two contexts and a fact, join them up, with the fact in the middle.
-fill :: Ctx -> Fact -> Ctx -> Ctx
-fill (Ctx l) f (Ctx r) = Ctx ((l S.|> f) <> r)
+fillHole :: Ctx -> Fact -> Ctx -> Ctx
+fillHole (Ctx l) f (Ctx r) = Ctx ((l S.|> f) <> r)
 
 -- | Find the "polarity" of a type. Polarities are mainly (only?) used for the
 -- subtyping judgment.
@@ -732,6 +733,8 @@ logRecur action = do
   incr <- view logIncrement
   local (logIndent +~ incr) action
 
+withRule r = map (\x -> (x, r))
+
 logRecurRule prefix action = do
   (result, rule) <- logRecur action `finally` do
     logText' " " ""
@@ -743,13 +746,13 @@ logRecurRule prefix action = do
 -- data and calls out to the *real* type-checking function.
 check :: Ctx -> Expr -> Ty -> Prin -> TcM Ctx
 check ctx ep ty prin = do
-  r <- logRecurRule " check : " (check' ctx ep ty prin) `finally` do
+  ctx' <- logRecurRule " check : " (check' ctx ep ty prin) `finally` do
     logText ("  expr : " <> pprExpr ep)
     logText ("  type : " <> pprTy ty)
     logText ("  prin : " <> pprPrin prin)
     logAnte ("   ctx : " <> pprCtx ctx)
-  logPost ("   ctx : " <> pprCtx r)
-  pure r
+  logPost ("   ctx' : " <> pprCtx ctx')
+  pure ctx'
 
 -- | The function that actually does all the type-checking.
 check'
@@ -774,7 +777,7 @@ check' ctx ep ty prin
   | EpUnit      <- ep
   , TyExVar ex  <- ty
   , Just (l, r) <- hole (FcExSort ex Star) ctx
-  = do withRule "UnitIntro-Extl" (pure (fill l (FcExEq ex Star TmUnit) r))
+  = do withRule "UnitIntro-Extl" (pure (fillHole l (FcExEq ex Star TmUnit) r))
 
   ------------------------------------------------------------------------------
   -- [Rule: WithIntro]
@@ -1109,7 +1112,7 @@ infer' ctx ep = case ep of
     pure (c, q, delta)
 
 
-  _ -> throwError ("infer: don't know how to infer type of" <+> pprExpr ep)
+  _ -> throwError ("infer: don't know how to infer type of" <++> pprExpr ep)
 
 freshHint :: Text -> TcM Text
 freshHint hint = do
@@ -1542,19 +1545,19 @@ pprUnVar (UnSym s) = s <> ""
 pprExVar :: ExVar -> Text
 pprExVar (ExSym s) = s <> "^"
 
-(<+>) a b = a <> " " <> b
+(<++>) a b = a <> " " <> b
 
 pprTyWithPrin :: Ty -> Prin -> Text
-pprTyWithPrin ty p = parens (pprPrin p) <> " " <> pprTy ty
+pprTyWithPrin ty p = parens__ (pprPrin p) <> " " <> pprTy ty
 
 pprTy :: Ty -> Text
 pprTy = \case
   TyUnit             -> "Unit"
   TyUnVar un         -> pprUnVar un
   TyExVar ex         -> pprExVar ex
-  TyBinop  l op   r  -> pprTy l <+> pprBin op <+> pprTy r
-  TyForall s sort ty -> "∀" <> parens (pprUnVar s <> ":" <> pprSort sort) <> "." <+> pprTy ty
-  TyVec n v -> "Vec" <+> pprTm n <+> pprTy v
+  TyBinop  l op   r  -> pprTy l <++> pprBin op <++> pprTy r
+  TyForall s sort ty -> "∀" <> parens__ (pprUnVar s <> ":" <> pprSort sort) <> "." <++> pprTy ty
+  TyVec n v -> "Vec" <++> pprTm n <++> pprTy v
   ty                 -> tshow ty
 
 pprTm :: Tm -> Text
@@ -1562,7 +1565,7 @@ pprTm = \case
   TmUnit         -> "Unit"
   TmUnVar un     -> pprUnVar un
   TmExVar ex     -> pprExVar ex
-  TmBinop l op r -> pprTm l <+> pprBin op <+> pprTm r
+  TmBinop l op r -> pprTm l <++> pprBin op <++> pprTm r
   tm             -> tshow tm
 
 pprBin :: Binop -> Text
@@ -1583,7 +1586,7 @@ pprFact' = \case
   FcUnMark   un       -> "▶" <> pprUnVar un
   FcExMark   ex       -> "▶" <> pprExVar ex
   FcPropMark prop     -> "▶" <> pprProp prop
-  FcVarTy var ty prin -> pprVar var <> " : " <> pprTy ty <+> pprPrin prin
+  FcVarTy var ty prin -> pprVar var <> " : " <> pprTy ty <++> pprPrin prin
 
 pprSpine :: Spine -> Text
 pprSpine = tshow
@@ -1594,30 +1597,30 @@ pprFact f = "[" <> pprFact' f <> "]"
 pprVar :: Var -> Text
 pprVar (Sym s) = s
 
-parens :: Text -> Text
-parens t = "(" <> t <> ")"
+parens__ :: Text -> Text
+parens__ t = "(" <> t <> ")"
 
-braces :: Text -> Text
-braces t = "{" <> t <> "}"
+braces__ :: Text -> Text
+braces__ t = "{" <> t <> "}"
 
 pprExpr :: Expr -> Text
 pprExpr = \case
   EpUnit             -> "Unit"
   EpLam var e        -> "λ " <> pprVar var <> ". " <> pprExpr e
   EpRec var e        -> "rec " <> pprVar var <> ". " <> pprExpr e
-  EpAnn e   ty       -> parens (pprExpr e <> " : " <> pprTy ty)
+  EpAnn e   ty       -> parens__ (pprExpr e <> " : " <> pprTy ty)
   EpVar (Sym x)      -> x
-  EpApp  e (Spine s) -> parens (T.unwords (map pprExpr (e : s)))
-  EpProd l r         -> parens (pprExpr l <+> pprBin OpProd <+> pprExpr r)
-  EpCase e alts      -> "case" <+> pprExpr e <+> "of" <+> braces (pprAlts alts)
+  EpApp  e (Spine s) -> parens__ (T.unwords (map pprExpr (e : s)))
+  EpProd l r         -> parens__ (pprExpr l <++> pprBin OpProd <++> pprExpr r)
+  EpCase e alts      -> "case" <++> pprExpr e <++> "of" <++> braces__ (pprAlts alts)
   EpVec v            -> pprVec v
-  e                  -> parens (tshow e)
+  e                  -> parens__ (tshow e)
 
 pprAlts :: Alts -> Text
 pprAlts (Alts bs) = T.intercalate ";\n" (map pprBranch bs)
 
 pprBranch :: Branch -> Text
-pprBranch (Branch p e) = tshow p <+> "->" <+> pprExpr e
+pprBranch (Branch p e) = tshow p <++> "->" <++> pprExpr e
 
 pprPat :: Pat -> Text
 pprPat = \case
@@ -1789,3 +1792,10 @@ a = do
   throwError "asdf"
   logText "adf"
   pure 2
+
+prettyType = align . sep . zipWith (<+>) ("::" : repeat "->")
+
+prettyDecl :: Text -> [Doc a] -> Doc a
+prettyDecl n tys = pretty n <+> prettyType tys
+
+doc = prettyDecl "example" ["Int", "Bool", "Char", "IO ()"]
