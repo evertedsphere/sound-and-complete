@@ -1,0 +1,4 @@
+:set -isrc
+:load Main
+:!clear
+main

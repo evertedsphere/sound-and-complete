@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances    #-}
+{-# LANGUAGE RankNTypes    #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE LambdaCase           #-}
@@ -25,36 +26,46 @@ import Data.String
 type Out = Doc AnsiStyle
 type OutM = PprM Out
 
+type OutEndo = OutM -> OutM
+type OutFold = forall f. Foldable f => f OutM -> OutM
+
 liftOutM :: (Foldable t) => ([a] -> b) -> t (PprM a) -> PprM b
 liftOutM f = map f . sequence . toList
 
-vsep :: Foldable f => f OutM -> OutM
+sep, vsep, hsep, fsep :: OutFold
+sep = liftOutM P.sep
 vsep = liftOutM P.vsep
+hsep = liftOutM P.hsep
+fsep = liftOutM P.fillSep
 
-vcat :: Foldable f => f OutM -> OutM
+cat, vcat, hcat, fcat :: OutFold
+cat = liftOutM P.cat
 vcat = liftOutM P.vcat
+hcat = liftOutM P.hcat
+fcat = liftOutM P.fillCat
 
-group :: OutM -> OutM
+group :: OutEndo
 group = map P.group
 
+annotate :: AnsiStyle -> OutEndo
 annotate = map . P.annotate
 
+parens, angles, braces, brackets :: OutEndo
 parens = map P.parens
 angles = map P.angles
 brackets = map P.brackets
-
-braces :: OutM -> OutM
 braces = map P.braces
 
+align :: OutEndo
 align = map P.align
-indent = map . P.indent
 
-hsep = liftOutM P.hsep
-sep = liftOutM P.sep
+indent :: Int -> OutEndo
+indent = map . P.indent
 
 punctuate :: OutM -> PprM [Out] -> PprM [Out]
 punctuate p os = P.punctuate <$> p <*> os
 
+(<+>) :: OutM -> OutM -> OutM
 (<+>) = liftA2 (P.<+>)
 
 globalIndentWidth :: Int
@@ -120,7 +131,10 @@ instance AnsiPretty Binop where pprM = pprBinM
 instance AnsiPretty Polarity where pprM = pprPolarityM
 instance AnsiPretty Text  where pprM = pure . pretty
 
+(<->) :: OutM -> OutM -> OutM
 a <-> b = vsep [a, b]
+
+(<@>) :: OutM -> OutM -> OutM
 a <@> b = vcat [a, b]
 
 id :: a -> a
@@ -216,18 +230,21 @@ pprSortM = fmtSort . \case
   Star -> "*"
   Nat  -> "Nat"
 
+lamPrec = 1
+casePrec = 1
+
 pprExprM :: Expr -> OutM
 pprExprM = fmtExpr . \case
   EpUnit -> "Unit"
   EpLam var e ->
-    fmtLam "\\" <> pprM var <+> fmtLamArrow "->" <+> parens (pprM e)
+    fmtLam "\\" <> pprM var <+> fmtLamArrow "->" <+> above parens lamPrec (assoc lamPrec (pprM e))
   EpRec var e        -> fmtRec "rec" <+> pprM var <+> parens (pprM e)
   EpAnn e   ty       -> align (parens (pprM e) <@> parens (pprM ty))
   EpVar s            -> pprM s
   EpApp  e (Spine s) -> pprM (Spine (e : s))
   EpProd l r         -> pprM l <+> pprM OpProd <+> pprM r
-  EpCase e alts ->
-    fmtMatch "case" <+> pprM e <+> "of" <+> indent globalIndentWidth (pprM alts)
+  EpCase e alts -> above parens casePrec
+    (fmtMatch "case" <+> nowrap (pprM e) <+> "of" <+> (assoc casePrec (pprM alts)))
   EpVec v -> pprM v
   -- e       -> parens (pprM (tshow e))
 
