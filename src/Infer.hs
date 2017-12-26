@@ -1,5 +1,3 @@
-{-# OPTIONS_GHC -Wno-deprecations -Wno-unused-matches -Wno-unused-local-binds #-}
-
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE OverloadedLists #-}
 {-# LANGUAGE GADTs #-}
@@ -8,16 +6,13 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE PatternGuards #-}
-{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE TemplateHaskell #-}
 
-module SoundAndComplete.Infer where
+module Infer where
 
 --------------------------------------------------------------------------------
 -- [Glossary]
@@ -51,7 +46,7 @@ module SoundAndComplete.Infer where
 --
 --    >>> typecheck (check (Ctx S.Empty) EpUnit TyUnit Slash)
 
-import Overture hiding (set, pred, sum, un, op, (|>), left, right, (<+>), Empty)
+import Overture hiding (set, pred, sum, un, op, (|>), left, right, (<+>))
 import Test.Hspec
 
 import Data.Sequence (Seq, pattern (:|>))
@@ -61,18 +56,52 @@ import qualified Data.Map as M
 import qualified Data.Text.Lazy as T
 import qualified Data.Text.Lazy.IO as T
 
-import SoundAndComplete.Types
+import Types
 
 import Safe
+import qualified Pretty
 
 import Data.Text.Prettyprint.Doc
 import Data.Text.Prettyprint.Doc.Util (putDocW)
 import Data.Generics.Uniplate.Data
 
---
--- Typechecker environments
---
+import qualified Data.List as L
 
+-- data Tree a = Leaf a | Rose a [Tree a]
+
+-- type Twig = Text
+-- type LogElt = [Twig]
+-- type Log = Tree LogElt
+
+-- emptyLog :: Log
+-- emptyLog = Leaf ["root"]
+
+logToTree :: Foldable t => t (LogItem a) -> Tree a 
+logToTree = Rose . foldr (merge . deep) []
+  where 
+    deep :: forall a. LogItem a -> Tree a
+    deep (LogItem n a) 
+      | n <= 0 = Leaf a 
+      | otherwise = Rose [deep (LogItem (n-1) a)] 
+
+    merge :: forall a. Tree a -> [Tree a] -> [Tree a]
+    merge (Rose a) (Rose b : xs) = Rose (foldr merge b a) : xs 
+    merge a xs = a : xs
+
+-- t :: _
+-- t = [(0,1), (1,2), (2,3), (1,4), (1,5), (2,6), (3,7), (3,8), (1,9)] 
+--   & map (uncurry (zipWith LogItem))
+--   & S.fromList
+--   & logToTree
+
+-- logItem :: (MonadWriter s m, Snoc s s a a, s ~ t (Int, a)) => a -> m b -> m b
+-- logItem x =  (|> 
+
+--------------------------------------------------------------------------------
+  -- Constructing the typechecking monad 'TcM'
+--------------------------------------------------------------------------------
+
+{-# ANN TcState ("HLint: ignore Use camelCase" :: String) #-}
 -- | Typechecker state
 data TcState  = TcState
   { _tcState_freshCounter :: Int
@@ -80,7 +109,7 @@ data TcState  = TcState
    deriving (Show, Eq)
 
 initialContext :: Ctx
-initialContext = Ctx S.empty
+initialContext = Ctx Empty
 
 initialState :: TcState
 initialState = TcState 1
@@ -88,35 +117,21 @@ initialState = TcState 1
 -- | Typechecker configuration
 data TcConfig = TcConfig
   { _tcConfig_log_indent :: Int
-  , _tcConfig_log_increment :: Int
   }
   deriving (Show, Eq)
 
 initialConfig :: TcConfig
-initialConfig = TcConfig 0 4
+initialConfig = TcConfig 0
 
 logIndent :: Lens' TcConfig Int
 logIndent = lens _tcConfig_log_indent (\s l -> s { _tcConfig_log_indent = l })
 
-logIncrement :: Lens' TcConfig Int
-logIncrement =
-  lens _tcConfig_log_increment (\s l -> s { _tcConfig_log_increment = l })
-
--- | Like @MonadReader@'s @local@, but for @State@.
-slocal :: MonadState s m => (s -> s) -> m a -> m a
-slocal f ma = do
-  oldState <- get
-  modify f
-  res <- ma
-  put oldState
-  pure res
-
--- | The typechecking monad.
+type TcWrite = Seq (LogItem JudgmentD)
 
 newtype TcM a
   = TcM { runTcM :: ExceptT Text
                       (ReaderT TcConfig
-                        (WriterT' [Text]
+                        (WriterT' TcWrite
                           (StateT TcState IO))) a }
   deriving
    ( Functor
@@ -124,7 +139,7 @@ newtype TcM a
    , Monad
    , MonadError  Text
    , MonadReader TcConfig
-   , MonadWriter [Text]
+   , MonadWriter TcWrite
    , MonadState  TcState
    , MonadIO
    )
@@ -144,7 +159,7 @@ ppInfer ctx ep = typecheck' pp $ infer ctx ep
   pp (t, p, c) = do
     putTextLn ("expr : " <> pprExpr ep)
     putTextLn ("type : " <> pprTy t)
-    putTextLn (" ctx : " <> pprCtx c)
+    putTextLn (pprCtx c)
 
 ppCheck :: TcM Ctx -> IO ()
 ppCheck = typecheck' pp
@@ -154,13 +169,13 @@ ppCheck = typecheck' pp
 
 typecheck' :: (a -> IO ()) -> TcM a -> IO ()
 typecheck' f action = do
-  ((result, tcLog), finalState) <-
+  ((result, logLines), finalState) <-
     action
     & runTcM
     & runExceptT
-    & (runReaderT ?? initialConfig)
+    & flip runReaderT initialConfig
     & runWriterT'
-    & (runStateT ?? initialState)
+    & flip runStateT initialState
   case result of
     Left err -> do
       putTextLn "Error while typechecking: "
@@ -168,14 +183,16 @@ typecheck' f action = do
     Right res -> do
       f res
 
-  traverse_ putTextLn tcLog
+  traverse_ (T.putStrLn . tshow . Pretty.ppr) logLines
+  -- print (Pretty.ppr (logToTree logLines))
+  -- traverse_ putTextLn tcLog
 
   putTextLn ""
 
   putTextLn "Final typechecker state:"
   print finalState
 
-  putTextLn "Done.\n---"
+  putTextLn "Done."
  where
 
 -- | Filter a context for a fact that satisfies a predicate.
@@ -212,16 +229,21 @@ unVarSort ctx un
   unVarSort' e1 (FcUnSort e2 _) = e1 == e2
   unVarSort' _  _               = False
 
+checkSort :: Ctx -> Tm -> Sort -> TcM ()
+checkSort ctx tm s = do
+  s' <- inferSort ctx tm
+  unless (s == s') (throwError "checkSort")
+
 -- | Given a context, find the sort of a monotype.
 --
 -- Note [TmNat sort-checking]
---------------------------------------------------------------------------------
+-- -----------------------------------------------------------------------------
 -- For the TmNat branch, we know the sort "by type" since
 -- my embedding of TmZero and TmSucc as TmNat Nat gives
 -- us this for free. :)
 
-termSort :: Ctx -> Tm -> TcM Sort
-termSort ctx = \case
+inferSort :: Ctx -> Tm -> TcM Sort
+inferSort ctx = \case
 
   ------------------------------------------------------------------------------
   -- [Rule: ZeroSort] and [Rule: SuccSort]
@@ -242,8 +264,8 @@ termSort ctx = \case
   ------------------------------------------------------------------------------
 
   TmBinop l _ r
-    -> do lsort <- termSort ctx l
-          rsort <- termSort ctx r
+    -> do lsort <- inferSort ctx l
+          rsort <- inferSort ctx r
           case (lsort, rsort) of
             (Star, Star) -> pure Star
             _ -> throwError "lol"
@@ -294,8 +316,8 @@ propWF ctx (Equation a b) = do
   -- [Rule: EqProp]
   ------------------------------------------------------------------------------
 
-  sa <- termSort ctx a
-  sb <- termSort ctx b
+  sa <- inferSort ctx a
+  sb <- inferSort ctx b
   case sa of
     Nat -> case sb of
       Nat -> pure True
@@ -309,7 +331,7 @@ typeWF ctx ty
 
   | TyUnVar un <- ty
   = do
-      sun <- termSort ctx (TmUnVar un)
+      sun <- inferSort ctx (TmUnVar un)
       case sun of
         Star -> pure True
         _ -> throwError "lol"
@@ -319,7 +341,7 @@ typeWF ctx ty
   -- [Rule: SolvedVarWF]
 
   | TyExVar ex <- ty
-  = termSort ctx (TmExVar ex) >>= \case
+  = inferSort ctx (TmExVar ex) >>= \case
         Star -> pure True
         _ -> throwError "lol"
 
@@ -391,10 +413,10 @@ ctxWF :: Ctx -> Bool
 ctxWF (Ctx s)
 
   ------------------------------------------------------------------------------
-  -- [Rule: EmptyCtx]
+  -- [Rule: NilCtx]
   ------------------------------------------------------------------------------
 
-  | S.Empty <- s
+  | Empty <- s
   = True
 
   ------------------------------------------------------------------------------
@@ -452,7 +474,7 @@ substituteCtxTm = error "substituteCtxTm"
 
 -- | Assume a hypothesis is true in a given context, and return either an
 -- updated context or (in case the context becomes inconsistent) @Bottom@.
-assumeHypo :: Ctx -> Prop -> PICtx ()
+assumeHypo :: Ctx -> Prop -> PICtx
 assumeHypo = error "assumeHypo"
 
 checkProp :: Ctx -> Prop -> Ctx
@@ -463,38 +485,49 @@ checkProp = error "checkProp"
 checkEq :: Ctx -> Tm -> Tm -> Ctx
 checkEq = error "checkEq"
 
--- | Unify two terms or monotypes, taking context ctx = \Gamma to
--- either a modified context \Delta or inconsistency.
-unify :: Ctx -> Tm -> Tm -> TcM (PICtx Sort)
-unify ctx a b
+-- | Unify two terms or monotypes, with sort taken from the context, taking
+-- context ctx = \Gamma to either a modified context \Delta or inconsistency.
+
+unifyInfer :: Ctx -> Tm -> Tm -> TcM (PICtx, Sort)
+unifyInfer ctx a b = do
+  sort <- inferSort ctx a
+  checkSort ctx b sort
+  ctx' <- unify ctx a b sort
+  pure (ctx', sort)
+
+-- | Unify two terms or monotypes, taking context ctx = \Gamma to either a
+-- modified context \Delta or inconsistency.
+unify :: Ctx -> Tm -> Tm -> Sort -> TcM PICtx
+unify ctx a b sort
 
   -- [Rule: ElimeqUVarRefl]
 
   | TmUnVar{} <- a
   , a == b
-  = do sort <- termSort ctx a
-       pure (ConCtx ctx sort)
+  = do --sort <- inferSort ctx a
+       pure (ConCtx ctx)
 
   -- [Rule: ElimeqUnit]
 
   | TmUnit <- a
   , TmUnit <- b
-  = pure (ConCtx ctx Star)
+  = pure (ConCtx ctx)
 
   -- [Rule: ElimeqZero]
 
   | TmNat Zero <- a
   , TmNat Zero <- b
-  = pure (ConCtx ctx Nat)
+  = pure (ConCtx ctx)
 
   -- [Rule: ElimeqSucc]
 
   | TmNat (Succ sigma) <- a
   , TmNat (Succ tau)   <- b
+  , Nat <- sort
   = do
-      res <- unify ctx (TmNat sigma) (TmNat tau)
+      res <- unify ctx (TmNat sigma) (TmNat tau) sort
       case res of
-        ConCtx _ Nat -> pure res
+        ConCtx _ -> pure res
         _ -> throwError "lol"
 
   -- [Rule: ElimeqClash]
@@ -507,7 +540,7 @@ unify ctx a b
   | TmUnVar alpha <- a
   , alpha `notElem` freeUnivs b
   , none (isUnEqOf alpha) (toList (let Ctx s = ctx in s))
-  = pure (ConCtx (ctx |> (FcUnEq alpha b)) _)
+  = pure (ConCtx (ctx |> (FcUnEq alpha b)))
 
   | otherwise
   = do
@@ -519,6 +552,8 @@ isUnEqOf un = \case
   FcUnEq lhs _ -> lhs == un -- TODO only check LHS?
   _ -> False
 
+-- | Check for a clash on head constructors.
+-- This is essentially (?) using the injectivity of `data`.
 headConClash :: Tm -> Tm -> Bool
 headConClash a b
   | TmNat  Zero    <- a
@@ -545,8 +580,6 @@ headConClash a b
   = False
 
 -- | Check two propositions for equivalence.
--- Nothing signifies inequivalence.
--- TODO better representation?
 propEquiv :: Ctx -> Prop -> Prop -> TcM Ctx
 propEquiv _ _ _ = throwError "propEquiv"
 
@@ -554,21 +587,6 @@ propEquiv _ _ _ = throwError "propEquiv"
 typeEquiv :: Ctx -> Ty -> Ty -> TcM Ctx
 typeEquiv ctx TyUnit TyUnit = pure ctx
 typeEquiv _ _ _ = throwError "boom"
-
-_TyExVar :: Prism' Ty ExVar
-_TyExVar = prism' TyExVar (\case
-  TyExVar e -> Just e
-  _ -> Nothing)
-
-_TyUnVar :: Prism' Ty UnVar
-_TyUnVar = prism' TyUnVar (\case
-  TyUnVar e -> Just e
-  _ -> Nothing)
-
--- | Using prisms here for kicks. A simple pattern-match would likely
--- be more efficient.
--- nonQuantifierHead :: Ty -> Bool
--- nonQuantifierHead = liftA2 (&&) (isn't _TyExVar) (isn't _TyUnVar)
 
 polNeg :: Ty -> Bool
 polNeg t = polarity t == Negative
@@ -620,16 +638,11 @@ finally action cleanup = do
 
 -- | Logging wrapper for the real subtyping function.
 checkSubtype :: Ctx -> Polarity -> Ty -> Ty -> TcM Ctx
-checkSubtype ctx p a b = do
-  logRecurRule "  csub : " (checkSubtype' ctx p a b) `finally` do
-    logText ("   lhs : " <> pprTy a)
-    logText ("  sign : " <> pprPolarity p)
-    logText ("   rhs : " <> pprTy b)
-    logText ("   ctx : " <> pprCtx ctx)
+checkSubtype = checkSubtype'
 
 -- | Given a context and a polarity p, check if a type is a p-subtype of
 -- another.
-checkSubtype' :: Ctx -> Polarity -> Ty -> Ty -> TcM (Ctx, Text)
+checkSubtype' :: Ctx -> Polarity -> Ty -> Ty -> TcM Ctx
 checkSubtype' ctx p a b  = case p of
 
   --------------------------------------------------------------------------
@@ -722,60 +735,39 @@ notACase = \case
   EpCase {} -> False
   _         -> True
 
-logTextP :: Text -> TcM ()
-logTextP = logText' "|"
-
-logTextA :: Text -> TcM ()
-logTextA = logText' "|--"
-
-logText :: Text -> TcM ()
-logText = logText' "|"
-
-logAnte :: Text -> TcM ()
-logAnte = logText' "-"
-
-logPost :: Text -> TcM ()
-logPost = logText' "+"
-
-logText' :: Text -> Text -> TcM ()
-logText' t x = do
+logD :: JudgmentD -> TcM ()
+logD j = do
   indent <- view logIndent
-  let msg = T.replicate (fromIntegral indent) " " <> t <> " " <> x
-  -- liftIO (T.putStrLn msg)
-  tell [msg]
+  tell [LogItem indent j]
 
 logRecur action = do
-  incr <- view logIncrement
-  local (logIndent +~ incr) action
+  local (logIndent +~ 1) action
 
-withRule r = map (\x -> (x, r))
+withRule :: Text -> TcM a -> TcM a
+withRule r x = logD (JRuleN (RuleName r)) *> x
 
-logRecurRule prefix action = do
-  (result, rule) <- logRecur action `finally` do
-    logText' " " ""
-    logText' "J" prefix
-  logText' "J" rule
-  pure result
+-- logRecurRule prefix action = do
+--   (result, rule) <- logRecur action `finally` do
+--     logText' " " ""
+--     logText' "J" prefix
+--   logText' "J" rule
+--   pure result
 
 -- | The type-checking wrapper function. For now, this just logs a bit of
 -- data and calls out to the *real* type-checking function.
 check :: Ctx -> Expr -> Ty -> Prin -> TcM Ctx
-check ctx ep ty prin = do
-  ctx' <- logRecurRule " check : " (check' ctx ep ty prin) `finally` do
-    logText ("  expr : " <> pprExpr ep)
-    logText ("  type : " <> pprTy ty)
-    logText ("  prin : " <> pprPrin prin)
-    logAnte ("   ctx : " <> pprCtx ctx)
-  logPost ("   ctx' : " <> pprCtx ctx')
-  pure ctx'
+check ctx ep ty pr = logRecur $ do
+  logD (JJudgN "check")
+  logD (JCtx ctx)
+  check' ctx ep ty pr
 
 -- | The function that actually does all the type-checking.
 check'
-  :: Ctx      -- ^ context representing knowledge before attempting the typecheck
-  -> Expr     -- ^ expression to be checked
-  -> Ty       -- ^ type to be checked against
-  -> Prin     -- ^ are we claiming the type is principal?
-  -> TcM (Ctx, Text)  -- ^ an updated context, representing what we know after said attempt
+  :: Ctx     -- ^ context representing knowledge before attempting the typecheck
+  -> Expr    -- ^ expression to be checked
+  -> Ty      -- ^ type to be checked against
+  -> Prin    -- ^ are we claiming the type is principal?
+  -> TcM Ctx -- ^ an updated context, representing what we know after said attempt
 
 check' ctx ep ty prin
   | EpUnit <- ep
@@ -865,7 +857,7 @@ check' ctx ep ty prin
   -- broke nothing), so we continue with the extra knowledge it gave us.
   -----------------------------------------------------------------------------
 
-      ConCtx theta _ -> withRule "ImpliesIntro" $ do -- 3.
+      ConCtx theta -> withRule "ImpliesIntro" $ do -- 3.
          outputCtx <- check theta nu (substituteCtx theta a) Bang
          case hole markP outputCtx of
            Just (delta, delta') -> do
@@ -1074,16 +1066,13 @@ check' ctx ep ty prin
 -- | Given a context and an expression, infer its type, a principality for it,
 -- and an updated context.
 infer :: Ctx -> Expr -> TcM (Ty, Prin, Ctx)
-infer ctx ep = do
-  r@(ty, p, ctx') <- logRecurRule " infer : " (infer' ctx ep) `finally` do
-    logText ("  expr : " <> pprExpr ep)
-    logAnte ("   ctx : " <> pprCtx ctx)
-  logText ("  type : " <> pprTy ty)
-  logText ("  prin : " <> pprPrin p)
-  logChanged "  ctx' : " pprCtx ctx ctx'
-  pure r
+infer ctx ep = logRecur $ do
+  logD (JJudgN "infer")
+  logD (JCtx ctx)
+  logD (JExpr ep)
+  infer' ctx ep
 
-infer' :: Ctx -> Expr -> TcM ((Ty, Prin, Ctx), Text)
+infer' :: Ctx -> Expr -> TcM (Ty, Prin, Ctx)
 infer' ctx ep = case ep of
 
   ------------------------------------------------------------------------------
@@ -1164,19 +1153,13 @@ unToEx (UnSym sym) = ExSym sym
 exToUn :: ExVar -> UnVar
 exToUn (ExSym sym) = UnSym sym
 
-logChanged label ppr pre post =
-  if (pre == post) then
-    logText "<<unchanged>>"
-  else
-    logPost (label <> ppr post)
-
 -- | Infer the type of a spine application. This form does not attempt to
 -- recover principality in the synthesized type.
 --
 -- I read the output (C, q, Δ) as "q-type C with output context Δ".
 --
 -- For example,
--- (Bang, TyUnit, Ctx Empty) = "the principal type () with empty output context"
+-- (Bang, TyUnit, Ctx Nil) = "the principal type () with empty output context"
 
 inferSpine
   :: Ctx        -- ^ input context
@@ -1187,22 +1170,14 @@ inferSpine
          , Prin --   inferred principality of application
          , Ctx  --   output context
          )      -- ^ judgment
-inferSpine ctx sp ty p = do
-  r@(ty', p', ctx') <- 
-    logRecurRule "  infsp : " (inferSpine' ctx sp ty p) `finally` do
-      logText ("  spine : " <> pprSpine sp)
-      logText (" exprty : " <> pprTyWithPrin ty p)
-      logAnte ("    ctx : " <> pprCtx ctx)
-  logChanged "    ctx : " pprCtx ctx ctx'
-  logText ("  appty : " <> pprTyWithPrin ty' p')
-  pure r
+inferSpine ctx sp ty p = logRecur (inferSpine' ctx sp ty p)
 
 inferSpine'
   :: Ctx        
   -> Spine     
   -> Ty       
   -> Prin       
-  -> TcM ((Ty, Prin, Ctx), Text)
+  -> TcM (Ty, Prin, Ctx)
 inferSpine' ctx sp ty p
 
   ------------------------------------------------------------------------------
@@ -1239,14 +1214,14 @@ inferSpine' ctx sp ty p
        pure (c, q, delta)
 
   ------------------------------------------------------------------------------
-  -- [Rule: EmptySpine]
+  -- [Rule: NilSpine]
   --
   -- Applying an expression to an empty spine is trivial.
   -- Return everything unchanged.
   ------------------------------------------------------------------------------
 
   | Spine [] <- sp
-  = withRule "EmptySpine"
+  = withRule "NilSpine"
   $ pure (ty, p, ctx)
 
   ------------------------------------------------------------------------------
@@ -1303,18 +1278,11 @@ solveHole :: Ctx -> Ctx -> Seq Fact -> Ctx
 solveHole l r fs = l <> Ctx fs <> r
 
 inferSpineRecover ctx sp ty p = do
-  r@(ty', p', ctx') <- logRecurRule "  recsp : " (inferSpineRecover' ctx sp ty p) `finally` do
-    logText ("  spine : " <> pprSpine sp)
-    logText (" exprty : " <> pprTyWithPrin ty p)
-    logAnte ("    ctx : " <> pprCtx ctx)
-  logChanged "    ctx : " pprCtx ctx ctx'
-  logText ("  appty : " <> pprTyWithPrin ty' p')
-  pure r
+  inferSpineRecover' ctx sp ty p
 
 -- | Infer the type of a spine application. Additionally, this form
 -- attempts to recover principality in the output type.
-
-inferSpineRecover' :: Ctx -> Spine -> Ty -> Prin -> TcM ((Ty, Prin, Ctx), Text)
+inferSpineRecover' :: Ctx -> Spine -> Ty -> Prin -> TcM (Ty, Prin, Ctx)
 inferSpineRecover' ctx s a p = do
 
   ------------------------------------------------------------------------------
@@ -1346,23 +1314,18 @@ inferSpineRecover' ctx s a p = do
 -- | Check case-expressions.
 -- Wrapper for @matchBranches'@.
 matchBranches :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
-matchBranches ctx alts ts ty p = do
-  ctx' <- logRecurRule "  match : " (matchBranches' ctx alts ts ty p) `finally` do
-    logText ("     ty : " <> pprTyWithPrin ty p)
-    logAnte ("    ctx : " <> pprCtx ctx)
-  logChanged "    ctx : " pprCtx ctx ctx'
-  pure ctx
+matchBranches ctx alts ts ty p = logRecur (matchBranches' ctx alts ts ty p)
 
 -- | Check case-expressions.
 -- Given an input context, a case-expression, a type-vector, and a 
 -- type/prin pair, attempt to match the case-expr/typevec against the
 -- type with the given principality, returning an updated output context.
-matchBranches' :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM (Ctx, Text)
+matchBranches' :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
 
 ------------------------------------------------------------------------------
--- [Rule: MatchEmpty]
+-- [Rule: MatchNil]
 ------------------------------------------------------------------------------
-matchBranches' gamma (Alts []) _ _ _ = withRule "MatchEmpty" $ 
+matchBranches' gamma (Alts []) _ _ _ = withRule "MatchNil" $ 
   pure gamma
 
 ------------------------------------------------------------------------------
@@ -1376,15 +1339,8 @@ matchBranches' gamma (Alts [Branch [] e]) [] _C p = withRule "MatchBase" $ do
   delta <- check gamma e _C p
   pure delta
 
---------------------------------------------------------------------------------
----- [Rule: Match]
-----
---------------------------------------------------------------------------------
---matchBranches' ctx (Alts [Branch ps e]) ts ty p = withRule "Match" $ do pure ctx
-
 ------------------------------------------------------------------------------
 -- [Rule: MatchSeq]
---
 ------------------------------------------------------------------------------
 matchBranches' gamma (Alts (pi : _Pi)) _A _C p = withRule "MatchSeq" $ do 
   theta <- matchBranch gamma pi _A _C p
@@ -1394,12 +1350,10 @@ matchBranches' gamma (Alts (pi : _Pi)) _A _C p = withRule "MatchSeq" $ do
 -- | Check case-expressions with a single branch (essentially a let?)
 matchBranch :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
 matchBranch ctx b ts ty p = do
-  -- liftIO (print (b,ts,ty,p))
-  logRecurRule "  matchb : " (matchBranch' ctx b ts ty p) `finally` do
-    liftIO (print (b,ts,ty,p))
+  matchBranch' ctx b ts ty p
 
 -- | Check case-expressions with a single branch (essentially a let?)
-matchBranch' :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM (Ctx, Text)
+matchBranch' :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
 ------------------------------------------------------------------------------
 -- [Rule: MatchUnit]
 --
@@ -1414,36 +1368,43 @@ matchBranch' gamma (Branch (PatUnit:ps) e) (TyUnit:ts) ty p = withRule "MatchUni
 --
 -- Match an "Either" pattern.
 ------------------------------------------------------------------------------
-matchBranch' gamma (Branch (PatInj k rho:ps) e) (TySum _A1 _A2 : _As) ty p = withRule "MatchPlus_k" $ do 
-  let _Ak = if k == InjL then _A1 else _A2
-  delta <- matchBranches gamma (Alts [Branch (rho:ps) e]) (_Ak:_As) ty p
-  pure delta
+matchBranch' gamma (Branch (PatInj k rho:ps) e) (TySum _A1 _A2:_As) ty p =
+  withRule "MatchPlus_k" $ do
+    let _Ak = if k == InjL then _A1 else _A2
+    delta <- matchBranches gamma (Alts [Branch (rho : ps) e]) (_Ak : _As) ty p
+    pure delta
 
-matchBranch' gamma (Branch (PatWild:ps) e) (_A : _As) _C p = withRule "MatchWild" $ do 
-  unless (notQuantifierHead _A) (throwError "quantifier-headed type")
-  delta <- matchBranches gamma (Alts [Branch ps e]) _As _C p
-  pure delta
+matchBranch' gamma (Branch (PatWild:ps) e) (_A:_As) _C p =
+  withRule "MatchWild" $ do
+    unless (notQuantifierHead _A) (throwError "quantifier-headed type")
+    delta <- matchBranches gamma (Alts [Branch ps e]) _As _C p
+    pure delta
 
-matchBranch' gamma (Branch (PatVec Empty:ps) e) (TyVec t _A : _As) _C p = withRule "MatchNil" $ do 
-  delta <- matchBranchesAssuming gamma (Equation t (TmNat Zero)) (Alts [Branch ps e]) _As _C p
-  pure delta
+matchBranch' gamma (Branch (PatVec Nil:ps) e) (TyVec t _A:_As) _C p =
+  withRule "MatchNil" $ do
+    delta <- matchBranchesAssuming gamma
+                                   (Equation t (TmNat Zero))
+                                   (Alts [Branch ps e])
+                                   _As
+                                   _C
+                                   p
+    pure delta
 
-matchBranch' gamma (Branch ps e) ts t p = withRule "default" $ liftIO (print ps) *> throwError "foo"
+matchBranch' gamma (Branch ps e) ts t p =
+  withRule "default" $ liftIO (print ps) *> throwError "foo"
 
-matchBranchesAssuming
-  :: Ctx -> Prop -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
-matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p 
-  | length bs /= 1 = throwError "too many branches" 
+matchBranchesAssuming :: Ctx -> Prop -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
+matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p
+  | length bs /= 1 = throwError "too many branches"
   | otherwise = do
-      ctx' <- unify gamma lt rt
-      case ctx' of
-        Bottom -> pure gamma
-        ConCtx{} -> do
-          ConCtx theta sort <- unify (gamma |> FcPropMark prop) lt rt
-          ctx'' <- matchBranches theta alts ts ty p
-          let Just (delta, delta') = hole (FcPropMark prop) ctx''
-          pure delta
-      
+    (ctx', sort) <- unifyInfer gamma lt rt
+    case ctx' of
+      Bottom   -> pure gamma
+      ConCtx{} -> do
+        ConCtx theta <- unify (gamma |> FcPropMark prop) lt rt sort
+        ctx''        <- matchBranches theta alts ts ty p
+        let Just (delta, delta') = hole (FcPropMark prop) ctx''
+        pure delta
 
 --------------------------------------------------------------------------------
 -- [Coverage checking]
@@ -1466,15 +1427,15 @@ matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p
 -- types in [A..].
 
 coverageCheck :: Ctx -> Alts -> [Ty] -> TcM Bool
-coverageCheck ctx alts tys = do
+coverageCheck ctx alts tys = 
   -- liftIO (putStrLn ("cov : " ++ show (ctx,alts,tys)))
-  coverageCheck' ctx alts tys
+  logRecur (coverageCheck' ctx alts tys)
 
 coverageCheck' :: Ctx -> Alts -> [Ty] -> TcM Bool
 coverageCheck' ctx alts tys
 
   ------------------------------------------------------------------------------
-  -- [Rule: CoversEmpty]
+  -- [Rule: CoversNil]
   ------------------------------------------------------------------------------
 
   | [] <- tys
@@ -1502,28 +1463,26 @@ coverageCheck' ctx alts tys
   ------------------------------------------------------------------------------
 
   | otherwise
-  = pure True --error "coverage"
+  = pure True -- error "coverage"
 
 prepareUnitAlts :: Alts -> TcM Alts
 prepareUnitAlts (Alts bs) = do
   liftIO (print "prepareUnitAlts")
   Alts <$> prepareUnitAlts' bs
-
-  where
-    prepareUnitAlts' :: [Branch] -> TcM [Branch]
-    prepareUnitAlts' = \case
-      [] -> pure []
-      Branch (r:rs) e : _Pi -> do
-        unless (ok r) (throwError "fail")
-        _Pi' <- prepareUnitAlts' _Pi
-        pure (Branch rs e : _Pi')
-
-      where 
-        ok = \case
-          PatVar{} -> False
-          PatWild  -> False
-          PatUnit  -> False
-          _        -> True
+ where
+  prepareUnitAlts' :: [Branch] -> TcM [Branch]
+  prepareUnitAlts' = \case
+    []                  -> pure []
+    Branch (r:rs) e:_Pi -> do
+      unless (ok r) (throwError "fail")
+      _Pi' <- prepareUnitAlts' _Pi
+      pure (Branch rs e : _Pi')
+   where
+    ok = \case
+      PatVar{} -> False
+      PatWild  -> False
+      PatUnit  -> False
+      _        -> True
 
 -- | This implements the second of the two coverage-checking judgments, which
 -- takes a proposition into account.
@@ -1566,115 +1525,67 @@ ty_unit_to_unit = TyUnit `TyArrow` TyUnit
 -- Pretty-printing
 --------------------------------------------------------------------------------
 
--- class P
-
 pprPolarity :: Polarity -> Text
-pprPolarity = \case
-  Positive -> "+"
-  Negative -> "-"
-  Nonpolar -> "0"
+pprPolarity = tshow . Pretty.ppr
 
 pprUnVar :: UnVar -> Text
-pprUnVar (UnSym s) = s <> ""
+pprUnVar = tshow . Pretty.ppr
 
 pprExVar :: ExVar -> Text
-pprExVar (ExSym s) = s <> "^"
+pprExVar = tshow . Pretty.ppr
 
 (<++>) a b = a <> " " <> b
 
 pprTyWithPrin :: Ty -> Prin -> Text
-pprTyWithPrin ty p = parens__ (pprPrin p) <> " " <> pprTy ty
+pprTyWithPrin = curry (tshow . Pretty.ppr)
 
 pprTy :: Ty -> Text
-pprTy = \case
-  TyUnit             -> "Unit"
-  TyUnVar un         -> pprUnVar un
-  TyExVar ex         -> pprExVar ex
-  TyBinop  l op   r  -> pprTy l <++> pprBin op <++> pprTy r
-  TyForall s sort ty -> "∀" <> parens__ (pprUnVar s <> ":" <> pprSort sort) <> "." <++> pprTy ty
-  TyVec n v -> "Vec" <++> pprTm n <++> pprTy v
-  ty                 -> tshow ty
+pprTy = tshow . Pretty.ppr
 
 pprTm :: Tm -> Text
-pprTm = \case
-  TmUnit         -> "Unit"
-  TmUnVar un     -> pprUnVar un
-  TmExVar ex     -> pprExVar ex
-  TmBinop l op r -> pprTm l <++> pprBin op <++> pprTm r
-  tm             -> tshow tm
+pprTm = tshow . Pretty.ppr
 
 pprBin :: Binop -> Text
-pprBin OpArrow = "->"
-pprBin OpSum   = "+"
-pprBin OpProd  = "×"
+pprBin = tshow . Pretty.ppr
 
 pprSort :: Sort -> Text
-pprSort = tshow
+pprSort = tshow . Pretty.ppr
 
 pprFact' :: Fact -> Text
-pprFact' = \case
-  FcUnSort un sort -> pprUnVar un <> " : " <> pprSort sort
-  FcExSort ex sort -> pprExVar ex <> " : " <> pprSort sort
-  FcUnEq   un tm   -> pprUnVar un <> " = " <> pprTm tm
-  FcExEq ex sort tm ->
-    pprExVar ex <> " : " <> pprSort sort <> " = " <> pprTm tm
-  FcUnMark   un       -> "▶" <> pprUnVar un
-  FcExMark   ex       -> "▶" <> pprExVar ex
-  FcPropMark prop     -> "▶" <> pprProp prop
-  FcVarTy var ty prin -> pprVar var <> " : " <> pprTy ty <++> pprPrin prin
+pprFact' = tshow . Pretty.ppr
 
 pprSpine :: Spine -> Text
-pprSpine = tshow
+pprSpine = tshow . Pretty.ppr
 
 pprFact :: Fact -> Text
-pprFact f = "[" <> pprFact' f <> "]"
+pprFact = tshow . Pretty.ppr
 
 pprVar :: Var -> Text
-pprVar (Sym s) = s
-
-parens__ :: Text -> Text
-parens__ t = "(" <> t <> ")"
-
-braces__ :: Text -> Text
-braces__ t = "{" <> t <> "}"
+pprVar = tshow . Pretty.ppr
 
 pprExpr :: Expr -> Text
-pprExpr = \case
-  EpUnit             -> "Unit"
-  EpLam var e        -> "λ " <> pprVar var <> ". " <> pprExpr e
-  EpRec var e        -> "rec " <> pprVar var <> ". " <> pprExpr e
-  EpAnn e   ty       -> parens__ (pprExpr e <> " : " <> pprTy ty)
-  EpVar (Sym x)      -> x
-  EpApp  e (Spine s) -> parens__ (T.unwords (map pprExpr (e : s)))
-  EpProd l r         -> parens__ (pprExpr l <++> pprBin OpProd <++> pprExpr r)
-  EpCase e alts      -> "case" <++> pprExpr e <++> "of" <++> braces__ (pprAlts alts)
-  EpVec v            -> pprVec v
-  e                  -> parens__ (tshow e)
+pprExpr = tshow . Pretty.ppr
 
 pprAlts :: Alts -> Text
-pprAlts (Alts bs) = T.intercalate ";\n" (map pprBranch bs)
+pprAlts = tshow . Pretty.ppr
 
 pprBranch :: Branch -> Text
-pprBranch (Branch p e) = tshow p <++> "->" <++> pprExpr e
+pprBranch = tshow . Pretty.ppr
 
 pprPat :: Pat -> Text
-pprPat = \case
-  PatUnit -> "Unit"
-  PatVar (Sym x) -> x
-  PatVec v -> pprVec v
+pprPat = tshow . Pretty.ppr
 
-pprVec :: Show a => Vec a -> Text
-pprVec = tshow . toList
+pprVec :: Pretty.AnsiPretty a => Vec a -> Text
+pprVec = tshow . Pretty.ppr
 
 pprPrin :: Prin -> Text
-pprPrin Bang  = "!"
-pprPrin Slash = "?"
+pprPrin = tshow . Pretty.ppr
 
 pprCtx :: Ctx -> Text
-pprCtx (Ctx s) = s & toList & map pprFact & T.unwords
+pprCtx = tshow . Pretty.ppr
 
 pprProp :: Prop -> Text
-pprProp (Equation a b) = "<" <> pprTm a <> " = " <> pprTm b <> ">"
+pprProp = tshow . Pretty.ppr
 
 execTcM :: TcM a -> IO (Either Text a)
 execTcM action = do
@@ -1691,11 +1602,11 @@ execTcM action = do
 -- tests = hspec tests'
 
 -- eTermSort :: Tm -> Either Text Sort
--- eTermSort = execTcM . termSort initialContext
+-- eTermSort = execTcM . inferSort initialContext
 
 -- tests' :: SpecWith ()
 -- tests' =
---   describe "inferring the sort of a term (`termSort`)" $ do
+--   describe "inferring the sort of a term (`inferSort`)" $ do
 --     context "given an existential variable" $ 
 --       it "fails if the variable is unknown" $ 
 --         eTermSort (TmExVar (ExSym "foo")) `shouldSatisfy` isn't _Right
@@ -1756,13 +1667,13 @@ mapExpr = EpAnn expr ty
         ( EpCase
           (EpVar xs)
           ( Alts
-            [ Branch [PatVec Empty] (EpVec Empty)
+            [ Branch [PatVec Nil] (EpVec Nil)
             , Branch
-              [PatVec (Cons (PatVar y) (Cons (PatVar ys) Empty))]
+              [PatVec (Cons (PatVar y) (Cons (PatVar ys) Nil))]
               ( EpVec
                 ( Cons
                   (EpApp (EpVar f) (Spine [EpVar y]))
-                  (Cons (EpApp (EpVar mapv) (Spine [EpVar f, EpVar ys])) Empty)
+                  (Cons (EpApp (EpVar mapv) (Spine [EpVar f, EpVar ys])) Nil)
                 )
               )
             ]
@@ -1779,13 +1690,13 @@ mapExpr = EpAnn expr ty
   y     = Sym "y"
   ys    = Sym "ys"
 
--- case Unit : Unit of
---   _ -> Unit : Unit
-
+match :: Expr -> [Branch] -> Expr
 match e bs = EpCase e (Alts bs)
+
 (-:) = EpAnn
 infixr 8 -:
-(~>) p e = Branch [p] e
+
+p ~> e = Branch [p] e
 infixr 6 ~>
 
 idUnit :: Expr
@@ -1815,18 +1726,12 @@ constApp :: Expr
 constApp = EpApp (EpVar (Sym "const")) (Spine [EpUnit])
 
 idApp :: Expr
-idApp = EpApp (EpVar (Sym "const")) (Spine [EpProd EpUnit EpUnit])
+idApp = EpApp (EpVar (Sym "id")) (Spine [EpUnit])
 
 bigStep :: Ctx -> Expr -> TcM Expr
 bigStep ctx = \case
   EpUnit     -> pure EpUnit
   EpProd a b -> EpProd <$> bigStep ctx a <*> bigStep ctx b
-
-a :: TcM Int
-a = do
-  throwError "asdf"
-  logText "adf"
-  pure 2
 
 prettyType = align . sep . zipWith (<+>) ("::" : repeat "->")
 

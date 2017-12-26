@@ -1,4 +1,3 @@
-{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -11,18 +10,15 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE PatternSynonyms #-}
-{-# LANGUAGE PatternGuards #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE TemplateHaskell #-}
 
-module SoundAndComplete.Types where
+module Types where
 
-import Overture hiding (set, pred, sum)
+import Overture 
 
 import Data.Sequence (Seq)
 import qualified Data.Sequence as S
@@ -70,10 +66,10 @@ pattern EpInjL e = EpInj InjL e
 pattern EpInjR :: Expr -> Expr
 pattern EpInjR e = EpInj InjR e
 
-data Spine = Spine [Expr]
+newtype Spine = Spine [Expr]
   deriving (Show, Ord, Eq, Generic, Data)
 
-data Alts = Alts [Branch]
+newtype Alts = Alts [Branch]
   deriving (Show, Ord, Eq, Generic, Data)
 
 -- | Patterns
@@ -92,22 +88,33 @@ data Branch = Branch [Pat] Expr
 data Binop    = OpArrow | OpSum | OpProd    deriving (Show, Ord, Eq, Generic, Data)
 data Nat      = Zero    | Succ Nat          deriving (Show, Ord, Eq, Generic, Data)
 
-data Vec   a  = Empty   | Cons a (Vec a)    deriving (Show, Ord, Eq, Generic, Data)
+data Vec   a  = Nil     | Cons a (Vec a)    deriving (Show, Ord, Eq, Generic, Data)
 
 deriving instance Functor Vec 
 deriving instance Foldable Vec 
+instance AsEmpty (Vec a) where
+  _Empty = prism' (const Nil) (\case
+    Nil -> Just ()
+    _ -> Nothing)
 
 -- | Terms
 data Tm
   = TmUnit
   | TmUnVar   UnVar
   | TmExVar   ExVar
-  | TmArrow   Tm Tm
-  | TmSum     Tm Tm
-  | TmProd    Tm Tm
+  | TmBinop   Tm Binop Tm
   | TmNat     Nat
   | TmVec     (Vec Expr)
   deriving (Show, Ord, Eq, Generic, Data)
+
+pattern TmSum :: Tm -> Tm -> Tm
+pattern TmSum l r = TmBinop l OpSum r
+
+pattern TmProd :: Tm -> Tm -> Tm
+pattern TmProd l r = TmBinop l OpProd r
+
+pattern TmArrow :: Tm -> Tm -> Tm
+pattern TmArrow l r = TmBinop l OpArrow r
 
 instance Plated Tm
 
@@ -117,21 +124,6 @@ instance HasTerms Tm where
       TmBinop a op b -> TmBinop <$> terms f a <*> pure op <*> terms f b
       -- TmVec ty -> TmVec <$> terms f n <*> terms f ty
       o -> pure o
-
-pattern TmBinop :: Tm -> Binop -> Tm -> Tm
-pattern TmBinop left op right <- (binopOfTerm -> Just (left, op, right))
-  where TmBinop = binopTerm
-
-binopOfTerm :: Tm -> Maybe (Tm, Binop, Tm)
-binopOfTerm (TmArrow a b) = Just (a, OpArrow, b)
-binopOfTerm (TmSum   a b) = Just (a, OpSum,   b)
-binopOfTerm (TmProd  a b) = Just (a, OpProd,  b)
-binopOfTerm _             = Nothing
-
-binopTerm :: Tm -> Binop -> Tm -> Tm
-binopTerm a OpArrow b = TmArrow a b
-binopTerm a OpSum   b = TmSum a b
-binopTerm a OpProd  b = TmProd a b
 
 class HasTerms a where
   terms :: Traversal' a Tm
@@ -173,9 +165,6 @@ instance HasTerms Ty where
       TyWith ty eq -> TyWith <$> terms f ty <*> terms f eq
       TyVec n ty -> TyVec <$> terms f n <*> terms f ty
       o -> pure o
-
--- ty :: Ty
--- ty = TyWith (TyArrow TyUnit (TyImplies (Equation TmUnit TmUnit) TyUnit)) (Equation TmUnit TmUnit)
 
 pattern TyBinop :: Ty -> Binop -> Ty -> Ty
 pattern TyBinop left op right <- (binopOfType -> Just (left, op, right))
@@ -225,22 +214,20 @@ markOfFact (FcUnMark (UnSym s)) = Just (Univ, s)
 markOfFact (FcExMark (ExSym s)) = Just (Extl, s)
 markOfFact _                    = Nothing
 
-markFact Univ s = (FcUnMark (UnSym s))
-markFact Extl s = (FcExMark (ExSym s))
+markFact Univ s = FcUnMark (UnSym s)
+markFact Extl s = FcExMark (ExSym s)
 
 sortOfFact (FcUnSort (UnSym s) _) = Just (Univ, s)
 sortOfFact (FcExSort (ExSym s) _) = Just (Extl, s)
 sortOfFact _                      = Nothing
 
 newtype Ctx = Ctx (Seq Fact)
-  deriving (Show, Ord, Eq)
-  deriving newtype Monoid
-  deriving newtype Semigroup
+  deriving (Show, Ord, Eq, Monoid, Semigroup)
 
--- | A possibly-inconsistent context, carrying some extra information.
--- This is isomorphic to Maybe (Ctx, a).
-data PICtx a
-  = ConCtx Ctx a
+-- | A possibly-inconsistent context
+-- This is isomorphic to Maybe Ctx.
+data PICtx
+  = ConCtx Ctx
   -- ^ A consistent context.
   | Bottom
   -- ^ Inconsistency.
@@ -248,3 +235,25 @@ data PICtx a
 
 (|>) :: Ctx -> Fact -> Ctx
 Ctx c |> f = Ctx (c S.|> f)
+
+data JudgmentD
+  = JCtx Ctx
+  | JPrin Prin
+  | JExpr Expr
+  | JTy Ty
+  | JTm Tm
+  | JAlts Alts
+  | JJudgN Text
+  | JRuleN RuleName
+  | Pre JudgmentD
+  | Post JudgmentD
+  deriving Show
+
+newtype RuleName = RuleName Text
+  deriving Show
+
+data Tree a = Leaf a | Rose [Tree a]
+  deriving Show 
+
+data LogItem a = LogItem { _logItem_depth :: Int, _logItem_message :: a }
+  deriving Show

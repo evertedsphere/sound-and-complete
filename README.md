@@ -69,7 +69,9 @@ quickly make this highly nontrivial. Sound and Complete gives a complete specifi
 
 ### Complete and Easy
 
-* Alexis King has written a clear [implementation](https://github.com/lexi-lambda/higher-rank) of Complete and Easy implementation in Haskell. She is also the principal developer of [Hackett](https://github.com/lexi-lambda/hackett), a Haskell-like language built on the Racket platform.
+* Alexis King has written a clear [implementation](https://github.com/lexi-lambda/higher-rank) of Complete and Easy implementation in Haskell. She is also the principal developer of [Hackett](https://github.com/lexi-lambda/hackett), a Haskell-like language built on the Racket platform that uses a type-system based on Complete and Easy.
+
+* Olle Fredriksson also has an [implementation](https://github.com/ollef/Bidirectional) of Complete and Easy (also in Haskell). More interestingly for us, his [Sixten](https://github.com/ollef/sixten/) language has many interesting features and is in a similar space type-system-wise (even though it is based on a different core).
 
 * The [PureScript](https://github.com/purescript/purescript) language has a type-system inspired by Complete and Easy.
 

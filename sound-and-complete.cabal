@@ -18,10 +18,15 @@ source-repository head
   type: git
   location: https://github.com/mrkgnao/sound-and-complete
 
-library
+executable repl
+  main-is: Main.hs
+  other-modules:
+      Infer
+      Types
+      Pretty
+      Overture
   hs-source-dirs:
       src
-  ghc-options:
   build-depends:
       base >= 4.10
     , mtl
@@ -29,6 +34,7 @@ library
     , safe
     , lens
     , prettyprinter
+    , prettyprinter-ansi-terminal
     , hspec
     , containers
     , adjunctions
@@ -37,9 +43,6 @@ library
     , bytestring
     , hashable
     , unordered-containers
-  exposed-modules:
-      SoundAndComplete.Infer
-      SoundAndComplete.Types
-  other-modules:
-      Overture
+    , exceptions
+    , uniplate
   default-language: Haskell2010
