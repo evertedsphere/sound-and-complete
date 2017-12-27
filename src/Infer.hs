@@ -1633,6 +1633,63 @@ eIf cond t f = EpCase
 ifExpr :: Expr
 ifExpr = eIf (EpAnn eTrue (TySum TyUnit TyUnit)) eFalse eTrue
 
+fstExpr :: Expr
+fstExpr = EpAnn expr ty
+ where
+  ty = TyForall
+    a
+    Star
+    (TyForall b Star (TyArrow (TyProd (TyUnVar a) (TyUnVar b)) (TyUnVar a)))
+  expr = EpLam
+    x
+    (EpCase (EpVar x) (Alts [Branch [PatProd (PatVar l) PatWild] (EpVar l)]))
+  a = UnSym "a"
+  b = UnSym "b"
+  x = Sym "a"
+  l = Sym "l"
+
+sndExpr :: Expr
+sndExpr = EpAnn expr ty
+ where
+  ty = TyForall
+    a
+    Star
+    (TyForall b Star (TyArrow (TyProd (TyUnVar a) (TyUnVar b)) (TyUnVar a)))
+  expr = EpLam
+    x
+    (EpCase (EpVar x) (Alts [Branch [PatProd PatWild (PatVar r)] (EpVar r)]))
+  a = UnSym "a"
+  b = UnSym "b"
+  x = Sym "a"
+  r = Sym "r"
+
+swapExpr :: Expr
+swapExpr = EpAnn expr ty
+ where
+  ty = TyForall
+    a
+    Star
+    ( TyForall
+      b
+      Star
+      ( TyArrow (TyProd (TyUnVar a) (TyUnVar b))
+                (TyProd (TyUnVar b) (TyUnVar a))
+      )
+    )
+  expr = EpLam
+    x
+    ( EpCase
+      (EpVar x)
+      ( Alts
+        [Branch [PatProd (PatVar l) (PatVar r)] (EpProd (EpVar r) (EpVar l))]
+      )
+    )
+  a = UnSym "a"
+  b = UnSym "b"
+  x = Sym "a"
+  l = Sym "l"
+  r = Sym "r"
+
 {-
 rec map = \f -> \xs -> case xs of
   [] -> []
@@ -1732,10 +1789,3 @@ bigStep :: Ctx -> Expr -> TcM Expr
 bigStep ctx = \case
   EpUnit     -> pure EpUnit
   EpProd a b -> EpProd <$> bigStep ctx a <*> bigStep ctx b
-
-prettyType = align . sep . zipWith (<+>) ("::" : repeat "->")
-
-prettyDecl :: Text -> [Doc a] -> Doc a
-prettyDecl n tys = pretty n <+> prettyType tys
-
-doc = prettyDecl "example" ["Int", "Bool", "Char", "IO ()"]

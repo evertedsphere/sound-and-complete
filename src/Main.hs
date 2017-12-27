@@ -3,15 +3,27 @@ module Main where
 import Pretty
 import Types
 import Infer
+import Data.Text.Prettyprint.Doc.Util (putDocW)
 
 main :: IO ()
 main = do
-  putStrLn ""
-  putStrLn ""
-  putStrLn ""
-  putStrLn (show (ppr mapExpr))
-  putStrLn ""
-  putStrLn ""
+  pprs [mapExpr, fstExpr, sndExpr, swapExpr]
+
+pprs es = let
+  pprPlain n e = do
+    putDocW n (ppr e)
+    putStrLn ""
+  pprGrouped n e = do
+    putStrLn ""
+    putDocW n (runPprM (group (pprM e)))
+    putStrLn ""
+  in do
+    putStrLn "\nPlain 40:"
+    mapM_ (pprPlain 40) es
+    putStrLn "\nGrouped 40:"
+    mapM_ (pprGrouped 40) es
+    putStrLn "\nGrouped 80:"
+    mapM_ (pprGrouped 80) es
 
 expr :: E
 expr = Const 1 :+: Const 2 :*: ((Const 3 :+: Const 4) :/: Const 6)
