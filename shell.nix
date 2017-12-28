@@ -10,13 +10,13 @@ let
     ghcVersion = "ghc822";
 
     overrides = rec {
-      # I don't want to use Brittany as a library!
+      jailbreak = [ "cabal-helper" "ghc-mod" "liquidhaskell" ];
       skipHaddock = justStaticExecutables;
+      skipTests = [ "ghc-mod" ];
       justStaticExecutables = [ 
         "brittany" 
         "hpack"
         "ghcid"
-        "hlint"
       ];
     };
   };
@@ -29,6 +29,9 @@ in
     # Haskell dependencies
     deps = hsPkgs: with hsPkgs; [
       brittany
+      ghc-mod
+      cabal-helper
+
       hpack
       ghcid
       hlint
@@ -54,5 +57,7 @@ in
     ];
 
     # Native dependencies
-    nativeDeps = pkgs: with pkgs; [ ];
+    nativeDeps = pkgs: with pkgs; [ 
+      z3 # for liquidhaskell
+    ];
   }

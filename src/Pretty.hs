@@ -1,4 +1,6 @@
 {-# LANGUAGE FlexibleInstances          #-}
+{-# LANGUAGE ScopedTypeVariables          #-}
+{-# LANGUAGE TypeApplications          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE NoImplicitPrelude          #-}
@@ -15,7 +17,7 @@ import           Types
 import           Data.Text.Prettyprint.Doc                 (Doc, backslash, dot,
                                                             pipe, pretty)
 import qualified Data.Text.Prettyprint.Doc                 as P
-import           Data.Text.Prettyprint.Doc.Render.Terminal 
+import           Data.Text.Prettyprint.Doc.Render.Terminal
 import           Data.Text.Prettyprint.Doc.Util            (putDocW)
 
 import qualified Data.Text.Lazy                            as TL
@@ -30,8 +32,17 @@ type OutM = PprM Out
 type OutEndo = OutM -> OutM
 type OutFold = forall f. Foldable f => f OutM -> OutM
 
-pprStdout :: OutM -> IO ()
-pprStdout = TL.putStrLn . TL.replace "\ESC" "\\e" . renderLazy . P.layoutPretty P.defaultLayoutOptions . runPprM
+renderStdout :: AnsiPretty a => a -> IO ()
+renderStdout = TL.putStrLn . renderText
+
+renderText :: AnsiPretty a => a -> TL.Text
+renderText =
+  TL.replace "\\e" "\ESC"
+    . renderLazy
+    . P.layoutPretty layoutOpts
+    . runPprM
+    . pprM
+  where layoutOpts = P.LayoutOptions (P.AvailablePerLine 80 0.7)
 
 liftOutM :: (Foldable t) => ([a] -> b) -> t (PprM a) -> PprM b
 liftOutM f = map f . sequence . toList
@@ -152,7 +163,7 @@ instance AnsiPretty Pat where pprM = pprPatM
 instance AnsiPretty a => AnsiPretty (Vec a) where pprM = pprVecM
 instance AnsiPretty Var   where pprM = pprVarM
 instance AnsiPretty ExVar where pprM = pprExVarM
-instance AnsiPretty UnVar where pprM = pprUnVarM
+instance AnsiPretty UnVar where pprM = fmtUnVar . pprUnVarM
 instance AnsiPretty Binop where pprM = pprBinopM
 instance AnsiPretty Polarity where pprM = pprPolarityM
 instance AnsiPretty Text  where pprM = pure . pretty
@@ -169,57 +180,47 @@ id x = x
 fmtSort = annotate (color Blue)
 
 fmtUnVar :: OutM -> OutM
-fmtUnVar = map (P.annotate (color Yellow))
+fmtUnVar = annotate (color Yellow)
 
 fmtExVar = annotate (color Magenta)
-fmtVar = id
-fmtPrin = id
-fmtPolarity = id
-fmtBinop = id
-fmtTy = id
-fmtTm = id
-fmtNat = id
-fmtCtx = id
-fmtPat = id
-fmtPatWild = id
-fmtExpr = id
+fmtPatWild = annotate (color Red <> bold)
 
 fmtKw = annotate (color Green <> bold)
 fmtRec = fmtKw
 fmtMatch = fmtKw
 
-fmtSynSym = annotate (color Green <> bold)
+fmtSynSym = fmtKw
 fmtAltPipe = fmtSynSym
 fmtOrPatPipe = fmtSynSym
 fmtLam = fmtSynSym
 fmtLamArrow = fmtSynSym
 fmtCaseArrow = fmtSynSym
 
-fmtQuantifier = annotate (color Yellow)
+fmtQuantifier = fmtKw
 
 pprPolarityM :: Polarity -> OutM
-pprPolarityM = fmtPolarity . \case
+pprPolarityM = \case
   Positive -> "+"
   Negative -> "-"
   Nonpolar -> "0"
 
 pprBinopM :: Binop -> OutM
-pprBinopM = fmtBinop . \case
+pprBinopM = \case
   OpArrow -> "->"
   OpSum   -> "+"
   OpProd  -> "×"
 
 pprUnVarM :: UnVar -> OutM
-pprUnVarM (UnSym s) = fmtUnVar (pprM s)
+pprUnVarM (UnSym s) = pprM s
 
 pprExVarM :: ExVar -> OutM
-pprExVarM (ExSym s) = fmtExVar (pprM s <> "^")
+pprExVarM (ExSym s) = pprM s <> "^"
 
 pprVarM :: Var -> OutM
-pprVarM (Sym s) = fmtVar (pprM s)
+pprVarM (Sym s) = pprM s
 
 pprPrinM :: Prin -> OutM
-pprPrinM = fmtPrin . \case
+pprPrinM = \case
   Bang  -> "!"
   Slash -> "?"
 
@@ -239,18 +240,22 @@ patBinopPrec = tyBinopPrec
 exprBinopPrec = tyBinopPrec
 
 pprTyM :: Ty -> OutM
-pprTyM = fmtTy . \case
+pprTyM = \case
   TyUnit         -> "Unit"
   TyUnVar un     -> pprM un
   TyExVar ex     -> pprM ex
   TyBinop l op r -> prec ^^ (pprM l <+> pprM op <+> prec %% pprM r)
     where prec = tyBinopPrec op
-  TyForall s sort ty ->
-    fmtQuantifier "∀" <> parens (pprM s <+> ":" <+> pprM sort) <+> pprM ty
+  TyForall s sort ty -> group
+    (   fmtQuantifier "∀"
+    <+> parens (pprM s <+> ":" <+> pprM sort)
+    <-> "."
+    <+> pprM ty
+    )
   TyVec n v -> "Vec" <+> pprM n <+> pprM v
 
 pprTmM :: Tm -> OutM
-pprTmM = fmtTm . \case
+pprTmM = \case
   TmUnit         -> "Unit"
   TmUnVar un     -> pprM un
   TmExVar ex     -> pprM ex
@@ -259,12 +264,12 @@ pprTmM = fmtTm . \case
   -- tm             -> pprM (tshow tm)
 
 pprNatM :: Nat -> OutM
-pprNatM = fmtNat . \case
+pprNatM = \case
   Zero   -> "Z"
   Succ n -> "S" <+> parens (pprM n)
 
 pprSortM :: Sort -> OutM
-pprSortM = fmtSort . \case
+pprSortM = \case
   Star -> "Type"
   Nat  -> "Nat"
 
@@ -274,7 +279,7 @@ casePrec = 1
 annPrec = 0
 
 pprExprM :: Expr -> OutM
-pprExprM = fmtExpr . \case
+pprExprM = \case
   EpUnit -> "Unit"
   EpLam var e ->
     fmtLam "\\"
@@ -286,14 +291,16 @@ pprExprM = fmtExpr . \case
     recPrec
     parens
     (assoc recPrec (pprM e))
-  EpAnn e ty ->
-    annPrec ^^ (annPrec %% pprM e <-> ":" <+> annPrec %% pprM ty)
+  EpAnn e ty -> annPrec ^^ (annPrec %% pprM e <-> ":" <+> annPrec %% pprM ty)
   EpVar s            -> pprM s
   EpApp  e (Spine s) -> pprM (Spine (e : s))
   EpProd l r         -> pprM l <+> pprM OpProd <+> pprM r
   EpCase e alts ->
     casePrec
-      ^^ (fmtMatch "case" <+> nowrap (pprM e) <-> indent globalIndentWidth (casePrec %% pprM alts))
+      ^^ ( fmtMatch "case" <+> nowrap (pprM e) <-> indent
+           globalIndentWidth
+           (casePrec %% pprM alts)
+         )
   EpVec v -> pprM v
   -- e       -> parens (pprM (tshow e))
 
@@ -305,19 +312,19 @@ pprBranchM (Branch p e) =
   pure (P.cat (P.punctuate "|" (map ppr p))) <+> "->" <+> nowrap (pprM e)
 
 pprPatM :: Pat -> OutM
-pprPatM = fmtPat . \case
+pprPatM = \case
   PatWild     -> fmtPatWild "_"
   PatUnit     -> "Unit"
   PatVar s    -> pprM s
   PatVec v    -> pprM v
   PatProd l r -> tyProdPrec ^^ (pprM l <+> "×" <+> tyProdPrec %% pprM r)
-  PatInj  i p -> tySumPrec
-    ^^ parens ((if i == InjL then "L" else "R") <+> tySumPrec %% pprM p)
+  PatInj i p ->
+    tySumPrec ^^ ((if i == InjL then "L" else "R") <+> tySumPrec %% pprM p)
 
 pprVecM :: AnsiPretty a => Vec a -> OutM
-pprVecM Empty          = "nil"
+pprVecM Empty       = "Nil"
 pprVecM (Cons x Empty) = pprM x
-pprVecM (Cons x xs   ) = hsep [pprM x, "::", pprM xs]
+pprVecM (Cons x xs) = hsep [pprM x, "::", pprM xs]
 
 pprCtxM :: Ctx -> OutM
 pprCtxM (Ctx s) = align (sep (map pprM (toList s)))

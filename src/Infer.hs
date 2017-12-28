@@ -1116,7 +1116,7 @@ infer' ctx ep = case ep of
     pure (c, q, delta)
 
 
-  _ -> throwError ("infer: don't know how to infer type of" <++> pprExpr ep)
+  _ -> throwError ("infer: don't know how to infer type of " <> pprExpr ep)
 
 freshHint :: Text -> TcM Text
 freshHint hint = do
@@ -1466,16 +1466,14 @@ coverageCheck' ctx alts tys
   = pure True -- error "coverage"
 
 prepareUnitAlts :: Alts -> TcM Alts
-prepareUnitAlts (Alts bs) = do
-  liftIO (print "prepareUnitAlts")
-  Alts <$> prepareUnitAlts' bs
+prepareUnitAlts (Alts bs) = Alts <$> go bs
  where
-  prepareUnitAlts' :: [Branch] -> TcM [Branch]
-  prepareUnitAlts' = \case
+  go :: [Branch] -> TcM [Branch]
+  go = \case
     []                  -> pure []
     Branch (r:rs) e:_Pi -> do
       unless (ok r) (throwError "fail")
-      _Pi' <- prepareUnitAlts' _Pi
+      _Pi' <- go _Pi
       pure (Branch rs e : _Pi')
    where
     ok = \case
@@ -1533,8 +1531,6 @@ pprUnVar = tshow . Pretty.ppr
 
 pprExVar :: ExVar -> Text
 pprExVar = tshow . Pretty.ppr
-
-(<++>) a b = a <> " " <> b
 
 pprTyWithPrin :: Ty -> Prin -> Text
 pprTyWithPrin = curry (tshow . Pretty.ppr)
@@ -1789,3 +1785,4 @@ bigStep :: Ctx -> Expr -> TcM Expr
 bigStep ctx = \case
   EpUnit     -> pure EpUnit
   EpProd a b -> EpProd <$> bigStep ctx a <*> bigStep ctx b
+
