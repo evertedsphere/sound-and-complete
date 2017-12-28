@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE InstanceSigs #-}
@@ -22,6 +23,7 @@ import Overture
 
 import Data.Sequence (Seq)
 import qualified Data.Sequence as S
+import GHC.Exts (IsList)
 
 --
 -- Representations of types and terms for algorithmic typing.
@@ -88,7 +90,7 @@ data Branch = Branch [Pat] Expr
 data Binop    = OpArrow | OpSum | OpProd    deriving (Show, Ord, Eq, Generic, Data)
 data Nat      = Zero    | Succ Nat          deriving (Show, Ord, Eq, Generic, Data)
 
-data Vec   a  = Nil     | Cons a (Vec a)    deriving (Show, Ord, Eq, Generic, Data)
+newtype Vec  a  = Vec [a]         deriving (Show, Ord, Eq, Generic, Data, IsList)
 
 deriving instance Functor Vec 
 deriving instance Foldable Vec 
@@ -96,6 +98,11 @@ instance AsEmpty (Vec a) where
   _Empty = prism' (const Nil) (\case
     Nil -> Just ()
     _ -> Nothing)
+
+pattern Nil <- Vec []
+  where Nil = Vec []
+
+pattern Cons x xs = Vec (x : xs)
 
 -- | Terms
 data Tm
@@ -205,7 +212,6 @@ data Fact
   deriving (Show, Ord, Eq)
 
 data VarSort = Univ | Extl
-  deriving (Show, Ord, Eq)
 
 pattern FcMark v s <- (markOfFact -> Just (v, s))
   where FcMark = markFact
@@ -236,7 +242,7 @@ data PICtx
 (|>) :: Ctx -> Fact -> Ctx
 Ctx c |> f = Ctx (c S.|> f)
 
-data JudgmentD
+data JudgmentItem
   = JCtx Ctx
   | JPrin Prin
   | JExpr Expr
@@ -245,15 +251,39 @@ data JudgmentD
   | JAlts Alts
   | JJudgN Text
   | JRuleN RuleName
-  | Pre JudgmentD
-  | Post JudgmentD
-  deriving Show
+  | Pre PreData
+  | RuleMatch Rule
+  | Post PostData
+
+data PreData
+  = PreTypeWF Ctx Ty
+  | PreInfer Ctx Expr
+  | PreCheck Ctx Expr Ty Prin
+  | PreSpine Ctx Spine Ty Prin
+  | PreSpineRecover Ctx Spine Ty Prin
+
+data Rule
+  = RuleCheck CheckRule
+  | RuleInfer InferRule
+  | RuleSpine SpineRule
+  | RuleSpineRecover SpineRecoverRule
+  | RuleMatchBranches MatchBranchesRule
+
+data SpineRule = RNilSpine | RArrowSpine | RForallSpine deriving Show
+data SpineRecoverRule = RSpinePass | RSpineRecover deriving Show
+data CheckRule = RForallIntro | RArrowIntro | RCase | RUnitIntro_Extl deriving Show
+data InferRule = RVar | RArrowE deriving Show
+data MatchBranchesRule = RMatchSeq | RMatchBase | RMatchNil deriving Show
+
+data PostData
+  = PostCheck Ctx
+  | PostInfer Ty Prin Ctx
+  | PostSpine Ty Prin Ctx
+  | PostSpineRecover Ty Prin Ctx
 
 newtype RuleName = RuleName Text
-  deriving Show
 
 data Tree a = Leaf a | Rose [Tree a]
-  deriving Show 
+  deriving Foldable
 
 data LogItem a = LogItem { _logItem_depth :: Int, _logItem_message :: a }
-  deriving Show

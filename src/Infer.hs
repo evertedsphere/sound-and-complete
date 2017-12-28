@@ -46,7 +46,7 @@ module Infer where
 --
 --    >>> typecheck (check (Ctx S.Empty) EpUnit TyUnit Slash)
 
-import Overture hiding (set, pred, sum, un, op, (|>), left, right, (<+>))
+import Overture hiding (pred, un, op, (|>), left, right)
 import Test.Hspec
 
 import Data.Sequence (Seq, pattern (:|>))
@@ -76,6 +76,7 @@ import qualified Data.List as L
 -- emptyLog :: Log
 -- emptyLog = Leaf ["root"]
 
+-- (c) mattoflambda / Matt Parsons
 logToTree :: Foldable t => t (LogItem a) -> Tree a 
 logToTree = Rose . foldr (merge . deep) []
   where 
@@ -126,7 +127,7 @@ initialConfig = TcConfig 0
 logIndent :: Lens' TcConfig Int
 logIndent = lens _tcConfig_log_indent (\s l -> s { _tcConfig_log_indent = l })
 
-type TcWrite = Seq (LogItem JudgmentD)
+type TcWrite = Seq (LogItem JudgmentItem)
 
 newtype TcM a
   = TcM { runTcM :: ExceptT Text
@@ -156,16 +157,15 @@ typecheck = typecheck' print
 ppInfer :: Ctx -> Expr -> IO ()
 ppInfer ctx ep = typecheck' pp $ infer ctx ep
  where
-  pp (t, p, c) = do
-    putTextLn ("expr : " <> pprExpr ep)
-    putTextLn ("type : " <> pprTy t)
-    putTextLn (pprCtx c)
+   pp (t, p, c) = pure ()
+    -- putTextLn ("expr : " <> pprExpr ep)
+    -- putTextLn ("type : " <> pprTy t)
+    -- putTextLn (pprCtx c)
 
 ppCheck :: TcM Ctx -> IO ()
 ppCheck = typecheck' pp
  where
-  pp c = do
-    putTextLn (pprCtx c)
+   pp c = pure ()
 
 typecheck' :: (a -> IO ()) -> TcM a -> IO ()
 typecheck' f action = do
@@ -183,9 +183,8 @@ typecheck' f action = do
     Right res -> do
       f res
 
-  traverse_ (T.putStrLn . tshow . Pretty.ppr) logLines
-  -- print (Pretty.ppr (logToTree logLines))
-  -- traverse_ putTextLn tcLog
+  -- traverse_ (\l -> Pretty.renderStdout l *> putTextLn "") logLines
+  Pretty.renderStdout (logToTree logLines)
 
   putTextLn ""
 
@@ -193,7 +192,6 @@ typecheck' f action = do
   print finalState
 
   putTextLn "Done."
- where
 
 -- | Filter a context for a fact that satisfies a predicate.
 factWith :: (Fact -> Bool) -> Ctx -> Maybe Fact
@@ -325,7 +323,12 @@ propWF ctx (Equation a b) = do
     _ -> throwError "lol"
 
 typeWF :: Ctx -> Ty -> TcM Bool
-typeWF ctx ty
+typeWF ctx ty = do
+  logPre (PreTypeWF ctx ty)
+  typeWF' ctx ty
+
+typeWF' :: Ctx -> Ty -> TcM Bool
+typeWF' ctx ty
 
   -- [Rule: VarWF] (universal case)
 
@@ -404,7 +407,7 @@ typeWF ctx ty
   = liftA2 (&&) (propWF ctx pr) (typeWF ctx a)
 
   | otherwise
-  = throwError "366"
+  = throwError "typeWF"
 
 prinTypeWF :: Ctx -> Ty -> Prin -> Bool
 prinTypeWF ctx ty p = True -- FIXME
@@ -735,7 +738,17 @@ notACase = \case
   EpCase {} -> False
   _         -> True
 
-logD :: JudgmentD -> TcM ()
+
+logPre :: PreData -> TcM ()
+logPre = logD . Pre
+
+logPost :: PostData -> TcM ()
+logPost = logD . Post
+
+logRuleMatch :: Rule -> TcM ()
+logRuleMatch = logD . RuleMatch
+
+logD :: JudgmentItem -> TcM ()
 logD j = do
   indent <- view logIndent
   tell [LogItem indent j]
@@ -757,9 +770,10 @@ withRule r x = logD (JRuleN (RuleName r)) *> x
 -- data and calls out to the *real* type-checking function.
 check :: Ctx -> Expr -> Ty -> Prin -> TcM Ctx
 check ctx ep ty pr = logRecur $ do
-  logD (JJudgN "check")
-  logD (JCtx ctx)
-  check' ctx ep ty pr
+  logPre (PreCheck ctx ep ty pr)
+  ctx' <- check' ctx ep ty pr
+  logPost (PostCheck ctx')
+  pure ctx'
 
 -- | The function that actually does all the type-checking.
 check'
@@ -783,8 +797,9 @@ check' ctx ep ty prin
 
   | EpUnit      <- ep
   , TyExVar ex  <- ty
-  , Just (l, r) <- hole (FcExSort ex Star) ctx
-  = do withRule "UnitIntro-Extl" (pure (fillHole l (FcExEq ex Star TmUnit) r))
+  , Just (l, r) <- hole (FcExSort ex Star) ctx = do 
+    logRuleMatch (RuleCheck RUnitIntro_Extl)
+    pure (fillHole l (FcExEq ex Star TmUnit) r)
 
   ------------------------------------------------------------------------------
   -- [Rule: WithIntro]
@@ -819,11 +834,11 @@ check' ctx ep ty prin
   | nu <- ep
   , checkedIntroForm nu
   , TyForall alpha k a  <- ty
-  , alpha'k             <- FcUnSort alpha k
-  = withRule "ForallIntro" $ do
-       ctx' <- check (ctx |> alpha'k) nu a prin
-       let Just (delta, theta) = hole alpha'k ctx'
-       pure delta
+  , alpha'k             <- FcUnSort alpha k = do
+      logRuleMatch (RuleCheck RForallIntro)
+      ctx' <- check (ctx |> alpha'k) nu a prin
+      let Just (delta, theta) = hole alpha'k ctx'
+      pure delta
 
   -----------------------------------------------------------------------------
   -- ImpliesIntro* rules
@@ -888,9 +903,8 @@ check' ctx ep ty prin
   | p                   <- prin
   , EpLam x e           <- ep
   , TyArrow a b         <- ty
-  , xap                 <- FcVarTy x a p
-  = withRule "ArrowIntro" 
-  $ do
+  , xap                 <- FcVarTy x a p = do
+      logRuleMatch (RuleCheck RArrowIntro)
       let xap = FcVarTy x a p
       check (ctx |> xap) e b p
         <&> hole xap
@@ -1031,15 +1045,14 @@ check' ctx ep ty prin
   ------------------------------------------------------------------------------
   | EpCase e alts <- ep
   , _C <- ty
-  , p <- prin
-  = withRule "Case" 
-  $ do
-      let gamma = ctx
-      (_A, Bang, theta) <- infer ctx e
-      delta <- matchBranches theta alts [substituteCtx theta _A] _C p
-      True <- coverageCheck delta alts [substituteCtx delta _A]
-      -- TODO continue from here
-      pure delta
+  , p <- prin = do
+    logRuleMatch (RuleCheck RCase)
+    let gamma = ctx
+    (_A, Bang, theta) <- infer ctx e
+    delta <- matchBranches theta alts [substituteCtx theta _A] _C p
+    True <- coverageCheck delta alts [substituteCtx delta _A]
+    -- TODO continue from here
+    pure delta
   
   ------------------------------------------------------------------------------
   -- [Rule: Sub]
@@ -1067,10 +1080,10 @@ check' ctx ep ty prin
 -- and an updated context.
 infer :: Ctx -> Expr -> TcM (Ty, Prin, Ctx)
 infer ctx ep = logRecur $ do
-  logD (JJudgN "infer")
-  logD (JCtx ctx)
-  logD (JExpr ep)
-  infer' ctx ep
+  logPre (PreInfer ctx ep)
+  r@(ty, prin, ctx') <- infer' ctx ep
+  logPost (PostInfer ty prin ctx')
+  pure r
 
 infer' :: Ctx -> Expr -> TcM (Ty, Prin, Ctx)
 infer' ctx ep = case ep of
@@ -1085,8 +1098,9 @@ infer' ctx ep = case ep of
   ------------------------------------------------------------------------------
 
   EpVar var
-    | Just (ty, prin) <- varTyPrin ctx var -> withRule "Var" $ do
-    pure (substituteCtx ctx ty, prin, ctx)
+    | Just (ty, prin) <- varTyPrin ctx var -> do
+      logRuleMatch (RuleInfer RVar)
+      pure (substituteCtx ctx ty, prin, ctx)
 
   ------------------------------------------------------------------------------
   -- [Rule: Anno]
@@ -1110,13 +1124,14 @@ infer' ctx ep = case ep of
   ------------------------------------------------------------------------------
 
   EpApp e spine
-    | Spine [_] <- spine -> withRule "ArrowE" $ do
-    (a, p, theta) <- infer ctx e
-    (c, q, delta) <- inferSpineRecover theta spine a p
-    pure (c, q, delta)
+    | Spine [_] <- spine -> do
+      logRuleMatch (RuleInfer RArrowE)
+      (a, p, theta) <- infer ctx e
+      (c, q, delta) <- inferSpineRecover theta spine a p
+      pure (c, q, delta)
 
 
-  _ -> throwError ("infer: don't know how to infer type of " <> pprExpr ep)
+  _ -> throwError ("infer: don't know how to infer type of " <> Pretty.renderText ep)
 
 freshHint :: Text -> TcM Text
 freshHint hint = do
@@ -1170,7 +1185,11 @@ inferSpine
          , Prin --   inferred principality of application
          , Ctx  --   output context
          )      -- ^ judgment
-inferSpine ctx sp ty p = logRecur (inferSpine' ctx sp ty p)
+inferSpine ctx sp ty p = logRecur $ do
+  logPre (PreSpine ctx sp ty p)
+  r@(rty, rp, rctx) <- inferSpine' ctx sp ty p
+  logPost (PostSpine rty rp rctx)
+  pure r
 
 inferSpine'
   :: Ctx        
@@ -1190,11 +1209,11 @@ inferSpine' ctx sp ty p
 
   | TyForall alpha k a <- ty
   , Spine (e : s)      <- sp
-  , alpha'             <- unToEx alpha
-  = withRule "ForallSpine"
-  $ do (c, q, delta)   <- inferSpine (ctx |> FcExSort alpha' k) sp
-                                     (existentializeTy alpha a) Slash
-       pure (c, q, delta)
+  , alpha'             <- unToEx alpha = do 
+    logRuleMatch (RuleSpine RForallSpine)
+    (c, q, delta)   <- inferSpine (ctx |> FcExSort alpha' k) sp
+                                  (existentializeTy alpha a) Slash
+    pure (c, q, delta)
 
   ------------------------------------------------------------------------------
   -- [Rule: ImpliesSpine]
@@ -1220,9 +1239,9 @@ inferSpine' ctx sp ty p
   -- Return everything unchanged.
   ------------------------------------------------------------------------------
 
-  | Spine [] <- sp
-  = withRule "NilSpine"
-  $ pure (ty, p, ctx)
+  | Spine [] <- sp = do
+    logRuleMatch (RuleSpine RNilSpine)
+    pure (ty, p, ctx)
 
   ------------------------------------------------------------------------------
   -- [Rule: ArrowSpine]
@@ -1232,9 +1251,8 @@ inferSpine' ctx sp ty p
 
   | TyArrow a b <- ty
   , Spine (e : s') <- sp
-  , s <- Spine s'
-  = withRule "ArrowSpine"
-  $ do
+  , s <- Spine s' = do
+    logRuleMatch (RuleSpine RArrowSpine)
     -- match the "function" against the input type a
     theta <- check ctx e a p
     -- match the "argument" against the output type b
@@ -1277,8 +1295,11 @@ exStar ex = FcExSort ex Star
 solveHole :: Ctx -> Ctx -> Seq Fact -> Ctx
 solveHole l r fs = l <> Ctx fs <> r
 
-inferSpineRecover ctx sp ty p = do
-  inferSpineRecover' ctx sp ty p
+inferSpineRecover ctx sp ty p = logRecur $ do
+  logPre (PreSpineRecover ctx sp ty p)
+  r@(rt, rp, rc) <- inferSpineRecover' ctx sp ty p
+  logPost (PostSpineRecover rt rp rc)
+  pure r
 
 -- | Infer the type of a spine application. Additionally, this form
 -- attempts to recover principality in the output type.
@@ -1294,8 +1315,10 @@ inferSpineRecover' ctx s a p = do
 
   res1 <- inferSpine ctx s a Bang
   case res1 of
-    (c, Slash, delta) | noFreeExtls c -> withRule "SpineRecover" (pure (c, Bang, delta))
-    _ -> withRule "SpinePass" $ do
+    (c, Slash, delta) | noFreeExtls c -> do
+      logRuleMatch (RuleSpineRecover RSpineRecover)
+      pure (c, Bang, delta)
+    _ -> do
 
   ------------------------------------------------------------------------------
   -- [Rule: SpinePass]
@@ -1303,7 +1326,7 @@ inferSpineRecover' ctx s a p = do
   -- WT: guessing "pass" is for "pass the principality inferred by
   -- inferSpine through"
   ------------------------------------------------------------------------------
-
+      logRuleMatch (RuleSpineRecover RSpinePass)
       res2 <- inferSpine ctx s a p
       case res2 of
         res@(c, q, delta)
@@ -1325,7 +1348,8 @@ matchBranches' :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
 ------------------------------------------------------------------------------
 -- [Rule: MatchNil]
 ------------------------------------------------------------------------------
-matchBranches' gamma (Alts []) _ _ _ = withRule "MatchNil" $ 
+matchBranches' gamma (Alts []) _ _ _ = do
+  logRuleMatch (RuleMatchBranches RMatchNil)
   pure gamma
 
 ------------------------------------------------------------------------------
@@ -1335,14 +1359,16 @@ matchBranches' gamma (Alts []) _ _ _ = withRule "MatchNil" $
 -- an empty type-vector, matches against a type/prin pair if the RHS of the
 -- only branch checks against it.
 ------------------------------------------------------------------------------
-matchBranches' gamma (Alts [Branch [] e]) [] _C p = withRule "MatchBase" $ do
+matchBranches' gamma (Alts [Branch [] e]) [] _C p = do
+  logRuleMatch (RuleMatchBranches RMatchBase)
   delta <- check gamma e _C p
   pure delta
 
 ------------------------------------------------------------------------------
 -- [Rule: MatchSeq]
 ------------------------------------------------------------------------------
-matchBranches' gamma (Alts (pi : _Pi)) _A _C p = withRule "MatchSeq" $ do 
+matchBranches' gamma (Alts (pi : _Pi)) _A _C p = do 
+  logRuleMatch (RuleMatchBranches RMatchSeq)
   theta <- matchBranch gamma pi _A _C p
   delta <- matchBranches theta (Alts _Pi) _A _C p
   pure delta
@@ -1523,66 +1549,6 @@ ty_unit_to_unit = TyUnit `TyArrow` TyUnit
 -- Pretty-printing
 --------------------------------------------------------------------------------
 
-pprPolarity :: Polarity -> Text
-pprPolarity = tshow . Pretty.ppr
-
-pprUnVar :: UnVar -> Text
-pprUnVar = tshow . Pretty.ppr
-
-pprExVar :: ExVar -> Text
-pprExVar = tshow . Pretty.ppr
-
-pprTyWithPrin :: Ty -> Prin -> Text
-pprTyWithPrin = curry (tshow . Pretty.ppr)
-
-pprTy :: Ty -> Text
-pprTy = tshow . Pretty.ppr
-
-pprTm :: Tm -> Text
-pprTm = tshow . Pretty.ppr
-
-pprBin :: Binop -> Text
-pprBin = tshow . Pretty.ppr
-
-pprSort :: Sort -> Text
-pprSort = tshow . Pretty.ppr
-
-pprFact' :: Fact -> Text
-pprFact' = tshow . Pretty.ppr
-
-pprSpine :: Spine -> Text
-pprSpine = tshow . Pretty.ppr
-
-pprFact :: Fact -> Text
-pprFact = tshow . Pretty.ppr
-
-pprVar :: Var -> Text
-pprVar = tshow . Pretty.ppr
-
-pprExpr :: Expr -> Text
-pprExpr = tshow . Pretty.ppr
-
-pprAlts :: Alts -> Text
-pprAlts = tshow . Pretty.ppr
-
-pprBranch :: Branch -> Text
-pprBranch = tshow . Pretty.ppr
-
-pprPat :: Pat -> Text
-pprPat = tshow . Pretty.ppr
-
-pprVec :: Pretty.AnsiPretty a => Vec a -> Text
-pprVec = tshow . Pretty.ppr
-
-pprPrin :: Prin -> Text
-pprPrin = tshow . Pretty.ppr
-
-pprCtx :: Ctx -> Text
-pprCtx = tshow . Pretty.ppr
-
-pprProp :: Prop -> Text
-pprProp = tshow . Pretty.ppr
-
 execTcM :: TcM a -> IO (Either Text a)
 execTcM action = do
   ((result, tcLog), finalState) <-
@@ -1691,49 +1657,22 @@ rec map = \f -> \xs -> case xs of
   [] -> []
   (y : ys) -> f y : map f ys
 -}
+
 mapExpr :: Expr
-mapExpr = EpAnn expr ty
+mapExpr = expr -: ty
  where
-  ty = TyForall
-    n
-    Nat
-    ( TyForall
-      alpha
-      Star
-      ( TyForall
-        beta
-        Star
-        ( TyArrow
-          (TyArrow (TyUnVar alpha) (TyUnVar beta))
-          ( TyArrow (TyVec (TmUnVar n) (TyUnVar alpha))
-                    (TyVec (TmUnVar n) (TyUnVar beta))
-          )
-        )
-      )
+  ty = TyForall n Nat $ TyForall alpha Star $ TyForall beta Star $ TyArrow
+    (TyArrow (TyUnVar alpha) (TyUnVar beta))
+    ( TyArrow (TyVec (TmUnVar n) (TyUnVar alpha))
+              (TyVec (TmUnVar n) (TyUnVar beta))
     )
-  expr = EpRec
-    mapv
-    ( EpLam
-      f
-      ( EpLam
-        xs
-        ( EpCase
-          (EpVar xs)
-          ( Alts
-            [ Branch [PatVec Nil] (EpVec Nil)
-            , Branch
-              [PatVec (Cons (PatVar y) (Cons (PatVar ys) Nil))]
-              ( EpVec
-                ( Cons
-                  (EpApp (EpVar f) (Spine [EpVar y]))
-                  (Cons (EpApp (EpVar mapv) (Spine [EpVar f, EpVar ys])) Nil)
-                )
-              )
-            ]
-          )
-        )
-      )
-    )
+  expr = EpRec mapv $ EpLam f $ EpLam xs $ EpCase (EpVar xs) $ Alts
+    [ PatVec Nil ~> EpVec Nil
+    , PatVec [PatVar y, PatVar ys] ~> EpVec
+      [ EpApp (EpVar f)    (Spine [EpVar y])
+      , EpApp (EpVar mapv) (Spine [EpVar f, EpVar ys])
+      ]
+    ]
   alpha = UnSym "a"
   beta  = UnSym "b"
   n     = UnSym "n"
@@ -1742,6 +1681,75 @@ mapExpr = EpAnn expr ty
   xs    = Sym "xs"
   y     = Sym "y"
   ys    = Sym "ys"
+
+pairOfLists, listOfPairs :: Pat
+(pairOfLists,listOfPairs) = (f,s)
+  where
+    f = PatProd (PatVec [PatVar x, PatVar xs]) (PatVec [PatVar y, PatVar ys])
+    s = PatVec [patProd x y, patProd xs ys]
+    patProd a b = PatProd (PatVar a) (PatVar b)
+    x     = Sym "x"
+    xs    = Sym "xs"
+    y     = Sym "y"
+    ys    = Sym "ys"
+
+zipExpr :: Expr
+zipExpr = expr -: ty
+ where
+  ty = TyForall n Nat $ TyForall alpha Star $ TyForall beta Star $ TyArrow
+    ( TyProd (TyVec (TmUnVar n) (TyUnVar alpha))
+             (TyVec (TmUnVar n) (TyUnVar beta))
+    )
+    (TyVec (TmUnVar n) (TyProd (TyUnVar alpha) (TyUnVar beta)))
+  expr = EpRec zipv $ EpLam p $ EpCase (EpVar p) $ Alts
+    [ PatProd (PatVec Nil)                   (PatVec Nil) ~> EpVec Nil
+    , PatProd (PatVec [PatVar x, PatVar xs]) (PatVec [PatVar y, PatVar ys])
+      ~> EpVec
+           [ EpProd (EpVar x)    (EpVar y)
+           , EpApp  (EpVar zipv) (Spine [EpProd (EpVar xs) (EpVar ys)])
+           ]
+    ]
+  alpha = UnSym "a"
+  beta  = UnSym "b"
+  n     = UnSym "n"
+  zipv  = Sym "zip"
+  p     = Sym "p"
+  x     = Sym "x"
+  xs    = Sym "xs"
+  y     = Sym "y"
+  ys    = Sym "ys"
+
+curriedZipExpr :: Expr
+curriedZipExpr = expr -: ty
+ where
+  ty = TyForall n Nat $ TyForall alpha Star $ TyForall beta Star $ TyArrow
+    (TyVec (TmUnVar n) (TyUnVar alpha))
+    ( TyArrow (TyVec (TmUnVar n) (TyUnVar beta))
+              (TyVec (TmUnVar n) (TyProd (TyUnVar alpha) (TyUnVar beta)))
+    )
+  expr = EpRec zipv $ EpLam p $ EpLam q $ EpCase (EpVar p) $ Alts
+    [ PatVec Nil ~> EpCase (EpVar q) (Alts [PatVec Nil ~> EpVec Nil])
+    , PatVec [PatVar x, PatVar xs] ~> EpCase
+      (EpVar q)
+      ( Alts
+        [ PatVec [PatVar y, PatVar ys] ~> EpVec
+          [ EpProd (EpVar x)    (EpVar y)
+          , EpApp  (EpVar zipv) (Spine [EpProd (EpVar xs) (EpVar ys)])
+          ]
+        ]
+      )
+    ]
+  alpha = UnSym "a"
+  beta  = UnSym "b"
+  n     = UnSym "n"
+  zipv  = Sym "zip"
+  p     = Sym "p"
+  q     = Sym "q"
+  x     = Sym "x"
+  xs    = Sym "xs"
+  y     = Sym "y"
+  ys    = Sym "ys"
+
 
 match :: Expr -> [Branch] -> Expr
 match e bs = EpCase e (Alts bs)
