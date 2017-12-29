@@ -179,6 +179,7 @@ instance AnsiPretty a => AnsiPretty (LogItem a) where ppr = pprLogItem
 
 instance AnsiPretty RuleName where ppr = pprRuleName
 instance AnsiPretty JudgmentItem where ppr = pprJudgmentItem
+instance AnsiPretty Judgment where ppr = pprJudgment
 instance AnsiPretty PreData where ppr = pprPreData
 instance AnsiPretty PostData where ppr = pprPostData
 instance AnsiPretty Rule where ppr = pprRule
@@ -393,18 +394,22 @@ pprRuleName (RuleName a) = pure (pretty a)
 
 pprJudgmentItem :: JudgmentItem -> OutM
 pprJudgmentItem = \case
-  JRuleN    r   -> ppr r
-  JJudgN    t   -> ppr t
-  JCtx      ctx -> ppr ctx
-  JExpr     ep  -> ppr ep
-  Pre       p   -> ppr p
-  Post      p   -> ppr p
+  JRuleN       r   -> ppr r
+  JJudgN       t   -> ppr t
+  JCtx         ctx -> ppr ctx
+  JExpr        ep  -> ppr ep
+  Pre          p   -> ppr p
+  Post         p   -> ppr p
   JMatchedRule r   -> ppr r
+  JMsg r msg -> vcat [lhs "judgment" <+> fmtJ (ppr r), lhs "info" <+> fmtB (ppr msg)]
+    where lhs = fill 10
+          fmtB = annotate (color Cyan <> bold)
+          fmtJ = annotate (color Green <> bold)
 
 pprPostData :: PostData -> OutM
 pprPostData = \case
   PostCheck ctx -> vcat [lhs "post" <+> fmtJ "Check", lhs "ctx" <+> ppr ctx]
-  PostInfer ty pr ctx -> vcat 
+  PostInfer ty pr ctx -> vcat
     [ lhs "post" <+> fmtJ "Infer"
     , lhs "ty" <+> ppr ty
     , lhs "prin" <+> ppr pr
@@ -412,24 +417,25 @@ pprPostData = \case
     ]
   PostSpine ty pr ctx -> ppr_tpc "Spine" ty pr ctx
   PostSpineRecover ty pr ctx -> ppr_tpc "SpineRecover" ty pr ctx
-  PostMatch ctx -> vcat
-    [ lhs "post" <+> fmtJ "Match"
+  PostMatch ctx -> vcat [lhs "post" <+> fmtJ "Match", lhs "ctx" <+> ppr ctx]
+ where
+  ppr_tpc rule ty pr ctx = vcat
+    [ lhs "post" <+> fmtJ "Spine"
+    , lhs "ty" <+> ppr ty
+    , lhs "prin" <+> ppr pr
     , lhs "ctx" <+> ppr ctx
     ]
-  where 
-    ppr_tpc rule ty pr ctx = vcat
-      [ lhs "post" <+> fmtJ "Spine"
-      , lhs "ty" <+> ppr ty
-      , lhs "prin" <+> ppr pr
-      , lhs "ctx" <+> ppr ctx
-      ]
-    fmtJ = annotate (color Green <> bold)
-    lhs  = fill 10
+  fmtJ = annotate (color Green <> bold)
+  lhs  = fill 10
 
 pprPreData :: PreData -> OutM
 pprPreData = \case
-  PreTypeWF ctx ty -> vcat
-    [lhs "pre" <+> fmtJ "TypeWF" , lhs "type" <+> ppr ty , lhs "ctx" <+> ppr ctx]
+  PreTypeWF ctx ty ->
+    vcat
+      [ lhs "pre" <+> fmtJ "TypeWF"
+      , lhs "type" <+> ppr ty
+      , lhs "ctx" <+> ppr ctx
+      ]
   PreInfer ctx ep -> vcat
     [lhs "pre" <+> fmtJ "Infer", lhs "expr" <+> ppr ep, lhs "ctx" <+> ppr ctx]
   PreCheck ctx sp ty prin -> vcat
@@ -438,9 +444,9 @@ pprPreData = \case
     , lhs "type" <+> ppr ty
     , lhs "ctx" <+> ppr ctx
     ]
-  PreSpine ctx ep ty prin -> ppr_cetp "Spine" ctx ep ty prin
+  PreSpine        ctx ep ty prin -> ppr_cetp "Spine" ctx ep ty prin
   PreSpineRecover ctx ep ty prin -> ppr_cetp "SpineRecover" ctx ep ty prin
-  PreMatch ctx b t ts p -> vcat
+  PreMatch ctx b t ts p          -> vcat
     [ lhs "pre" <+> fmtJ "Match"
     , lhs "type" <+> ppr t
     , lhs "types" <+> ppr ts
@@ -448,32 +454,36 @@ pprPreData = \case
     , lhs "ctx" <+> ppr ctx
     ]
  where
-   ppr_cetp rule ctx ep ty prin = vcat
+  ppr_cetp rule ctx ep ty prin = vcat
     [ lhs "pre" <+> fmtJ rule
     , lhs "expr" <+> ppr ep
     , lhs "type" <+> ppr ty
+    , lhs "prin" <+> ppr prin
     , lhs "ctx" <+> ppr ctx
     ]
-   fmtJ = annotate (color Green <> bold)
-   lhs  = fill 10
+  fmtJ = annotate (color Green <> bold)
+  lhs  = fill 10
 
 pprRule = \case
   RuleCheck         r -> rule "Check" r
-  RuleMatch r -> rule "Match" r
-  RuleInfer r -> rule "Infer" r
-  RuleSpine r -> rule "Spine" r
-  RuleSpineRecover r -> rule "SpineRecover" r
+  RuleMatch         r -> rule "Match" r
+  RuleInfer         r -> rule "Infer" r
+  RuleSpine         r -> rule "Spine" r
+  RuleSpineRecover  r -> rule "SpineRecover" r
   RuleMatchAssuming r -> rule "MatchAssuming" r
-  RuleFail -> lhs "rule" <+> fmtRed "FAIL"
+  RuleFail          j -> vcat
+    [ lhs "judgment" <+> fmtJ (pure (P.pretty (TL.drop 1 (tshow j))))
+    , lhs "rule" <+> fmtRed "FAIL: no rules matched"
+    ]
  where
   rule j r = vcat
-    [ lhs "match" <+> fmtJ j
-    , lhs "rule" <+> fmtR (pure (P.pretty (TL.drop 1 (tshow r))) :: OutM)
+    [ lhs "judgment" <+> fmtJ j
+    , lhs "rule" <+> fmtR (pure (P.pretty (TL.drop 1 (tshow r))))
     ]
-  fmtJ = annotate (color Green <> bold)
-  fmtR = annotate (color Blue <> bold)
+  fmtJ   = annotate (color Green <> bold)
+  fmtR   = annotate (color Blue <> bold)
   fmtRed = annotate (color Red <> bold)
-  lhs  = fill 10
+  lhs    = fill 10
 
 treeIndentWidth = globalIndentWidth
 
@@ -484,3 +494,6 @@ pprTree = \case
 
 pprLogItem :: AnsiPretty a => LogItem a -> OutM
 pprLogItem (LogItem d m) = fill 3 (pure (pretty d)) <+> ":" <+> align (ppr m)
+
+pprJudgment :: Judgment -> OutM
+pprJudgment = pure . P.pretty . TL.drop 1 . tshow

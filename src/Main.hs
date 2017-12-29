@@ -7,8 +7,7 @@ import Data.Text.Prettyprint.Doc.Util (putDocW)
 
 main :: IO ()
 main = do
-  -- ppInfer idCtx constApp
-  ppInfer idCtx zipExpr
+  ppInfer idCtx idApp
 
 pprs es = let
   pprPlain n e = do

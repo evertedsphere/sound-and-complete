@@ -138,7 +138,7 @@ ppInfer ctx ep = typecheck' pp $ infer ctx ep
  where
    pp (t, p, c) = pure ()
 
-ppCheck :: TcM Ctx -> IO ()
+ppCheck :: TcM a -> IO ()
 ppCheck = typecheck' pp
  where
    pp c = pure ()
@@ -161,6 +161,13 @@ typecheck' f action = do
 
   -- traverse_ (\l -> Pretty.renderStdout l *> putTextLn "") logLines
   Pretty.renderStdout (logToTree logLines)
+
+  -- putTextLn "Judgment structure:\n\n"
+
+  let isRuleMatch = \case
+        JMatchedRule{} -> True
+        _ -> False
+  Pretty.renderStdout (logToTree (S.filter (isRuleMatch . _logItem_message) logLines))
 
   putTextLn ""
 
@@ -718,6 +725,9 @@ notACase = \case
 logPre :: PreData -> TcM ()
 logPre = logD . Pre
 
+logMsg :: Judgment -> Text -> TcM ()
+logMsg j t = logD (JMsg j t)
+
 logPost :: PostData -> TcM ()
 logPost = logD . Post
 
@@ -1121,22 +1131,25 @@ freshEx :: TcM ExVar
 freshEx = ExSym <$> fresh
 
 -- | The free existential variables in a type.
-freeExtls :: Ty -> [ExVar]
-freeExtls = childrenBi
+freeExtls :: Ctx -> Ty -> [ExVar]
+freeExtls ctx ty = filter (isFree ctx) exs
+  where 
+    exs = childrenBi ty
+    isFree ctx ex = isNothing (solvedExVarSort ctx ex)
 
 -- | The free existential variables in a ter.
 freeUnivs :: Tm -> [UnVar]
 freeUnivs = childrenBi
 
 -- | A synonym for @freeExtls@ matching the notation from the paper.
-fev :: Ty -> [ExVar]
+fev :: Ctx -> Ty -> [ExVar]
 fev = freeExtls
 
-noFreeExtls :: Ty -> Bool
-noFreeExtls = null . freeExtls
+noFreeExtls :: Ctx -> Ty -> Bool
+noFreeExtls ctx = null . freeExtls ctx
 
-hasFreeExtls :: Ty -> Bool
-hasFreeExtls = not . noFreeExtls
+hasFreeExtls :: Ctx -> Ty -> Bool
+hasFreeExtls c = not . noFreeExtls c
 
 unToEx :: UnVar -> ExVar
 unToEx (UnSym sym) = ExSym sym
@@ -1173,51 +1186,51 @@ inferSpine'
   -> Ty       
   -> Prin       
   -> TcM (Ty, Prin, Ctx)
-inferSpine' ctx sp ty p
+
+------------------------------------------------------------------------------
+-- [Rule: ForallSpine]
+--
+-- The principality is omitted in the "top" rule (the antecedent?), so per
+-- the "sometimes omitted" note in [Figure: Syntax of declarative types and
+-- constructs], I'm assuming that means it's nonprincipal.
+------------------------------------------------------------------------------
+inferSpine' ctx sp (TyForall alpha k a) p = do
+  logRule (RuleSpine RForallSpine)
+  let
+    Spine (e : s) = sp
+    alpha'        = unToEx alpha
+  (c, q, delta)   <- inferSpine (ctx |> FcExSort alpha' k) sp
+                                (existentializeTy alpha a) Slash
+  pure (c, q, delta)
+
+------------------------------------------------------------------------------
+-- [Rule: ImpliesSpine]
+--
+-- In context Γ, applying e to a spine of type P ⊃ A synthesizes (C, q, Δ)
+-- if Γ tells us that the proposition P holds. (WT)
+--
+-- Questions:
+-- Are we matching on sp to check that the spine is nonempty?
+------------------------------------------------------------------------------
+
+inferSpine' ctx sp (TyImplies prop a) p = do
+  logRule (RuleSpine RImpliesSpine)
+  let
+    Spine (e : s) = sp
+    theta = checkProp ctx prop
+  (c, q, delta) <- inferSpine theta sp (substituteCtx theta a) p
+  pure (c, q, delta)
 
   ------------------------------------------------------------------------------
-  -- [Rule: ForallSpine]
-  --
-  -- The principality is omitted in the "top" rule (the antecedent?), so per
-  -- the "sometimes omitted" note in [Figure: Syntax of declarative types and
-  -- constructs], I'm assuming that means it's nonprincipal.
-  ------------------------------------------------------------------------------
-
-  | TyForall alpha k a <- ty
-  , Spine (e : s)      <- sp
-  , alpha'             <- unToEx alpha = do 
-    logRule (RuleSpine RForallSpine)
-    (c, q, delta)   <- inferSpine (ctx |> FcExSort alpha' k) sp
-                                  (existentializeTy alpha a) Slash
-    pure (c, q, delta)
-
-  ------------------------------------------------------------------------------
-  -- [Rule: ImpliesSpine]
-  --
-  -- In context Γ, applying e to a spine of type P ⊃ A synthesizes (C, q, Δ)
-  -- if Γ tells us that the proposition P holds. (WT)
-  --
-  -- Questions:
-  -- Are we matching on sp to check that the spine is nonempty?
-  ------------------------------------------------------------------------------
-
-  | TyImplies prop a <- ty
-  , Spine (e : s) <- sp
-  , theta <- checkProp ctx prop
-  = withRule "ImpliesSpine"
-  $ do (c, q, delta) <- inferSpine theta sp (substituteCtx theta a) p
-       pure (c, q, delta)
-
-  ------------------------------------------------------------------------------
-  -- [Rule: NilSpine]
+  -- [Rule: EmptySpine]
   --
   -- Applying an expression to an empty spine is trivial.
   -- Return everything unchanged.
   ------------------------------------------------------------------------------
 
-  | Spine [] <- sp = do
-    logRule (RuleSpine RNilSpine)
-    pure (ty, p, ctx)
+inferSpine' ctx (Spine []) ty p = do
+  logRule (RuleSpine REmptySpine)
+  pure (ty, p, ctx)
 
   ------------------------------------------------------------------------------
   -- [Rule: ArrowSpine]
@@ -1225,15 +1238,16 @@ inferSpine' ctx sp ty p
   -- I think this is the main function type-inferring judgment.
   ------------------------------------------------------------------------------
 
-  | TyArrow a b <- ty
-  , Spine (e : s') <- sp
-  , s <- Spine s' = do
-    logRule (RuleSpine RArrowSpine)
-    -- match the "function" against the input type a
-    theta <- check ctx e a p
-    -- match the "argument" against the output type b
-    (c, q, delta) <- inferSpine theta s (substituteCtx theta b) p
-    pure (c, q, delta)
+inferSpine' ctx sp (TyArrow a b) p = do
+  logRule (RuleSpine RArrowSpine)
+  let
+    Spine (e : s') = sp
+    s = Spine s'
+  -- match the "function" against the input type a
+  theta <- check ctx e a p
+  -- match the "argument" against the output type b
+  (c, q, delta) <- inferSpine theta s (substituteCtx theta b) p
+  pure (c, q, delta)
 
   ------------------------------------------------------------------------------
   -- [Rule: Spine-Extl]
@@ -1242,28 +1256,28 @@ inferSpine' ctx sp ty p
   -- since it was left unspecified?
   ------------------------------------------------------------------------------
 
-  | TyExVar ex@a' <- ty
-  , Spine (e : s') <- sp
-  = withRule "Spine-Extl"
-  $ do
-      Just Star            <- pure (exVarSort ctx ex)
-      Just (left, right)   <- pure (hole (FcExSort ex Star) ctx)
-      a'1 <- freshEx
-      a'2 <- freshEx
+inferSpine' ctx sp (TyExVar ex@a') p = do
+  let
+    Spine (e : s') = sp
+  Just Star            <- pure (exVarSort ctx ex)
+  Just (left, right)   <- pure (hole (FcExSort ex Star) ctx)
+  a'1 <- freshEx
+  a'2 <- freshEx
 
-      let
-        arrowMType = TmExVar a'1 `TmArrow` TmExVar a'2
-        arrowType  = TyExVar a'1 `TyArrow` TyExVar a'2
-        a'1s  = exStar a'1
-        a'2s  = exStar a'2
-        a'eq  = FcExEq a' Star arrowMType
-        ctx'  = solveHole left right [a'1s, a'2s, a'eq]
+  let
+    arrowMType = TmExVar a'1 `TmArrow` TmExVar a'2
+    arrowType  = TyExVar a'1 `TyArrow` TyExVar a'2
+    a'1s  = exStar a'1
+    a'2s  = exStar a'2
+    a'eq  = FcExEq a' Star arrowMType
+    ctx'  = solveHole left right [a'1s, a'2s, a'eq]
 
-      delta <- check ctx' e (TyExVar a'1) Slash
-      pure (arrowType, p, delta)
+  delta <- check ctx' e (TyExVar a'1) Slash
+  pure (arrowType, p, delta)
 
-  | otherwise
-  = throwError "inferSpine: the likely-impossible happened"
+inferSpine' _ _ _ _ = do
+  logRule (RuleFail JSpine)
+  throwError "inferSpine: the likely-impossible happened"
 
 exStar :: ExVar -> Fact
 exStar ex = FcExSort ex Star
@@ -1288,27 +1302,32 @@ inferSpineRecover' ctx s a p = do
   -- Upgrade a suitable nonprincipal type with no free existential
   -- tyvars into a principal type.
   ------------------------------------------------------------------------------
-
+  
   res1 <- inferSpine ctx s a Bang
   case res1 of
-    (c, Slash, delta) | noFreeExtls c -> do
-      logRule (RuleSpineRecover RSpineRecover)
-      pure (c, Bang, delta)
-    _ -> do
+    (c, Slash, delta) -> do
+      let fevCond = noFreeExtls delta c 
+      if fevCond then do
+        logMsg JSpineRecover "no free existential variables"
+        logRule (RuleSpineRecover RSpineRecover)
+        pure (c, Bang, delta)
+      else do
+        ------------------------------------------------------------------------------
+        -- [Rule: SpinePass]
+        --
+        -- WT: guessing "pass" is for "pass the principality inferred by
+        -- inferSpine through"
+        ------------------------------------------------------------------------------
 
-  ------------------------------------------------------------------------------
-  -- [Rule: SpinePass]
-  --
-  -- WT: guessing "pass" is for "pass the principality inferred by
-  -- inferSpine through"
-  ------------------------------------------------------------------------------
-      logRule (RuleSpineRecover RSpinePass)
-      res2 <- inferSpine ctx s a p
-      case res2 of
-        res@(c, q, delta)
-          | p == Slash || q == Bang || hasFreeExtls c
-          -> pure res
-        _ -> throwError "is this even possible?"
+        logMsg JSpineRecover "free existential variables"
+
+        logRule (RuleSpineRecover RSpinePass)
+        res2 <- inferSpine ctx s a p
+        case res2 of
+          res@(c, q, delta)
+            | p == Slash || q == Bang || hasFreeExtls delta c
+            -> pure res
+          _ -> throwError "is this even possible?"
 
 -- | Check case-expressions.
 -- Wrapper for @matchBranches'@.
@@ -1396,7 +1415,7 @@ matchBranch' gamma (Branch (PatVec Nil:ps) e) (TyVec t _A:_As) _C p = do
   pure delta
 
 matchBranch' gamma (Branch ps e) ts t p = do
-  logRule RuleFail
+  logRule (RuleFail JMatch)
   throwError "matchBranch'"
 
 matchBranchesAssuming :: Ctx -> Prop -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx

@@ -253,6 +253,7 @@ data JudgmentItem
   | JRuleN RuleName
   | Pre PreData
   | JMatchedRule Rule
+  | JMsg Judgment Text
   | Post PostData
 
 data PreData
@@ -279,12 +280,13 @@ data Rule
   | RuleSpineRecover SpineRecoverRule
   | RuleMatch MatchRule
   | RuleMatchAssuming MatchAssumingRule
-  | RuleFail
+  | RuleFail Judgment
 
 data SpineRule
-  = RNilSpine 
+  = REmptySpine 
   | RArrowSpine 
   | RForallSpine 
+  | RImpliesSpine
   deriving Show
 
 data SpineRecoverRule 
@@ -331,12 +333,12 @@ data Tree a = Leaf a | Rose [Tree a]
 
 data LogItem a = LogItem { _logItem_depth :: Int, _logItem_message :: a }
 
--- data Judgment
---   = JInfer
---   | JCheck
---   | JSpine
---   | JSpineRecover 
---   | JMatch 
---   | JMatchAssuming
---   | JTypeWF
-
+data Judgment
+  = JInfer
+  | JCheck
+  | JSpine
+  | JSpineRecover 
+  | JMatch 
+  | JMatchAssuming
+  | JTypeWF
+  deriving Show
