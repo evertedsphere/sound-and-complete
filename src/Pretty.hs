@@ -156,6 +156,7 @@ instance AnsiPretty Expr where ppr = pprExpr
 instance AnsiPretty Alts where ppr = pprAlts
 instance AnsiPretty Tm where ppr = pprTm
 instance AnsiPretty Ty where ppr = pprTy
+instance AnsiPretty [Ty] where ppr = vcat . map ppr
 instance AnsiPretty (Ty,Prin) where ppr = pprTyWithPrin
 instance AnsiPretty Nat where ppr = pprNat
 instance AnsiPretty Branch where ppr = pprBranch
@@ -398,7 +399,7 @@ pprJudgmentItem = \case
   JExpr     ep  -> ppr ep
   Pre       p   -> ppr p
   Post      p   -> ppr p
-  RuleMatch r   -> ppr r
+  JMatchedRule r   -> ppr r
 
 pprPostData :: PostData -> OutM
 pprPostData = \case
@@ -411,6 +412,10 @@ pprPostData = \case
     ]
   PostSpine ty pr ctx -> ppr_tpc "Spine" ty pr ctx
   PostSpineRecover ty pr ctx -> ppr_tpc "SpineRecover" ty pr ctx
+  PostMatch ctx -> vcat
+    [ lhs "post" <+> fmtJ "Match"
+    , lhs "ctx" <+> ppr ctx
+    ]
   where 
     ppr_tpc rule ty pr ctx = vcat
       [ lhs "post" <+> fmtJ "Spine"
@@ -435,6 +440,13 @@ pprPreData = \case
     ]
   PreSpine ctx ep ty prin -> ppr_cetp "Spine" ctx ep ty prin
   PreSpineRecover ctx ep ty prin -> ppr_cetp "SpineRecover" ctx ep ty prin
+  PreMatch ctx b t ts p -> vcat
+    [ lhs "pre" <+> fmtJ "Match"
+    , lhs "type" <+> ppr t
+    , lhs "types" <+> ppr ts
+    , lhs "prin" <+> ppr p
+    , lhs "ctx" <+> ppr ctx
+    ]
  where
    ppr_cetp rule ctx ep ty prin = vcat
     [ lhs "pre" <+> fmtJ rule
@@ -447,10 +459,12 @@ pprPreData = \case
 
 pprRule = \case
   RuleCheck         r -> rule "Check" r
-  RuleMatchBranches r -> rule "MatchBranches" r
+  RuleMatch r -> rule "Match" r
   RuleInfer r -> rule "Infer" r
   RuleSpine r -> rule "Spine" r
   RuleSpineRecover r -> rule "SpineRecover" r
+  RuleMatchAssuming r -> rule "MatchAssuming" r
+  RuleFail -> lhs "rule" <+> fmtRed "FAIL"
  where
   rule j r = vcat
     [ lhs "match" <+> fmtJ j
@@ -458,6 +472,7 @@ pprRule = \case
     ]
   fmtJ = annotate (color Green <> bold)
   fmtR = annotate (color Blue <> bold)
+  fmtRed = annotate (color Red <> bold)
   lhs  = fill 10
 
 treeIndentWidth = globalIndentWidth

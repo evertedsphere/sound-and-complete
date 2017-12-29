@@ -1,4 +1,5 @@
 {-# LANGUAGE DeriveFunctor #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE DeriveFoldable #-}
 {-# LANGUAGE StandaloneDeriving #-}
@@ -49,7 +50,7 @@ data Expr
   | EpInj   Inj   Expr
   | EpCase  Expr  Alts
   | EpVec   (Vec Expr)
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 instance Plated Expr 
 
@@ -69,10 +70,10 @@ pattern EpInjR :: Expr -> Expr
 pattern EpInjR e = EpInj InjR e
 
 newtype Spine = Spine [Expr]
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 newtype Alts = Alts [Branch]
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 -- | Patterns
 data Pat
@@ -82,10 +83,10 @@ data Pat
   | PatProd  Pat   Pat
   | PatInj   Inj   Pat
   | PatVec   (Vec Pat)
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 data Branch = Branch [Pat] Expr
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 data Binop    = OpArrow | OpSum | OpProd    deriving (Show, Ord, Eq, Generic, Data)
 data Nat      = Zero    | Succ Nat          deriving (Show, Ord, Eq, Generic, Data)
@@ -112,7 +113,7 @@ data Tm
   | TmBinop   Tm Binop Tm
   | TmNat     Nat
   | TmVec     (Vec Expr)
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 pattern TmSum :: Tm -> Tm -> Tm
 pattern TmSum l r = TmBinop l OpSum r
@@ -137,13 +138,13 @@ class HasTerms a where
 
 -- | Propositions (equality constraints)
 data Prop = Equation Tm Tm
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 instance HasTerms Prop where
   terms f (Equation x y) = Equation <$> f x <*> f y
 
 data Sort  = Star | Nat
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 -- | Types
 data Ty
@@ -158,7 +159,7 @@ data Ty
   | TyImplies Prop  Ty
   | TyWith    Ty    Prop
   | TyVec     Tm   Ty
-  deriving (Show, Ord, Eq, Generic, Data)
+  deriving (Eq, Generic, Data)
 
 instance Plated Ty
 
@@ -192,7 +193,7 @@ binopType a OpProd  b = TyProd a b
 data Prin 
   = Bang  -- ^ principal
   | Slash -- ^ nonprincipal
-  deriving (Show, Ord, Eq)
+  deriving (Eq)
 
 -- | Elements of the context, representing units of knowledge
 -- possessed by the typechecker.
@@ -209,7 +210,7 @@ data Fact
   | FcPropMark Prop
   -- variable types (with principality)
   | FcVarTy    Var   Ty   Prin
-  deriving (Show, Ord, Eq)
+  deriving (Eq)
 
 data VarSort = Univ | Extl
 
@@ -228,7 +229,7 @@ sortOfFact (FcExSort (ExSym s) _) = Just (Extl, s)
 sortOfFact _                      = Nothing
 
 newtype Ctx = Ctx (Seq Fact)
-  deriving (Show, Ord, Eq, Monoid, Semigroup)
+  deriving (Monoid, Semigroup)
 
 -- | A possibly-inconsistent context
 -- This is isomorphic to Maybe Ctx.
@@ -237,7 +238,6 @@ data PICtx
   -- ^ A consistent context.
   | Bottom
   -- ^ Inconsistency.
-  deriving (Show, Ord, Eq)
 
 (|>) :: Ctx -> Fact -> Ctx
 Ctx c |> f = Ctx (c S.|> f)
@@ -252,7 +252,7 @@ data JudgmentItem
   | JJudgN Text
   | JRuleN RuleName
   | Pre PreData
-  | RuleMatch Rule
+  | JMatchedRule Rule
   | Post PostData
 
 data PreData
@@ -261,29 +261,82 @@ data PreData
   | PreCheck Ctx Expr Ty Prin
   | PreSpine Ctx Spine Ty Prin
   | PreSpineRecover Ctx Spine Ty Prin
-
-data Rule
-  = RuleCheck CheckRule
-  | RuleInfer InferRule
-  | RuleSpine SpineRule
-  | RuleSpineRecover SpineRecoverRule
-  | RuleMatchBranches MatchBranchesRule
-
-data SpineRule = RNilSpine | RArrowSpine | RForallSpine deriving Show
-data SpineRecoverRule = RSpinePass | RSpineRecover deriving Show
-data CheckRule = RForallIntro | RArrowIntro | RCase | RUnitIntro_Extl deriving Show
-data InferRule = RVar | RArrowE deriving Show
-data MatchBranchesRule = RMatchSeq | RMatchBase | RMatchNil deriving Show
+  | PreMatch Ctx Branch [Ty] Ty Prin
 
 data PostData
   = PostCheck Ctx
   | PostInfer Ty Prin Ctx
   | PostSpine Ty Prin Ctx
   | PostSpineRecover Ty Prin Ctx
+  | PostMatch Ctx
 
 newtype RuleName = RuleName Text
+
+data Rule
+  = RuleCheck CheckRule
+  | RuleInfer InferRule
+  | RuleSpine SpineRule
+  | RuleSpineRecover SpineRecoverRule
+  | RuleMatch MatchRule
+  | RuleMatchAssuming MatchAssumingRule
+  | RuleFail
+
+data SpineRule
+  = RNilSpine 
+  | RArrowSpine 
+  | RForallSpine 
+  deriving Show
+
+data SpineRecoverRule 
+  = RSpinePass 
+  | RSpineRecover 
+  deriving Show
+
+data CheckRule 
+  = RForallIntro 
+  | RArrowIntro 
+  | RCase 
+  | RRec
+  | RUnitIntro_Extl 
+  deriving Show
+
+data InferRule 
+  = RVar 
+  | RArrowE 
+  | RAnno
+  deriving Show
+
+data MatchRule
+  = RMatchEmpty
+  | RMatchSeq 
+  | RMatchBase 
+  | RMatchUnit
+  | RMatchExists
+  | RMatchWith
+  | RMatchProd
+  | RMatchInj Inj
+  | RMatchNeg
+  | RMatchWild
+  | RMatchNil 
+  | RMatchCons
+  deriving Show
+
+data MatchAssumingRule
+  = RMatchBottom
+  | RMatchUnify
+  deriving Show
 
 data Tree a = Leaf a | Rose [Tree a]
   deriving Foldable
 
 data LogItem a = LogItem { _logItem_depth :: Int, _logItem_message :: a }
+
+-- data Judgment
+--   = JInfer
+--   | JCheck
+--   | JSpine
+--   | JSpineRecover 
+--   | JMatch 
+--   | JMatchAssuming
+--   | JTypeWF
+

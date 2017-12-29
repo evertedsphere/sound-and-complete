@@ -67,15 +67,6 @@ import Data.Generics.Uniplate.Data
 
 import qualified Data.List as L
 
--- data Tree a = Leaf a | Rose a [Tree a]
-
--- type Twig = Text
--- type LogElt = [Twig]
--- type Log = Tree LogElt
-
--- emptyLog :: Log
--- emptyLog = Leaf ["root"]
-
 -- (c) mattoflambda / Matt Parsons
 logToTree :: Foldable t => t (LogItem a) -> Tree a 
 logToTree = Rose . foldr (merge . deep) []
@@ -88,15 +79,6 @@ logToTree = Rose . foldr (merge . deep) []
     merge :: forall a. Tree a -> [Tree a] -> [Tree a]
     merge (Rose a) (Rose b : xs) = Rose (foldr merge b a) : xs 
     merge a xs = a : xs
-
--- t :: _
--- t = [(0,1), (1,2), (2,3), (1,4), (1,5), (2,6), (3,7), (3,8), (1,9)] 
---   & map (uncurry (zipWith LogItem))
---   & S.fromList
---   & logToTree
-
--- logItem :: (MonadWriter s m, Snoc s s a a, s ~ t (Int, a)) => a -> m b -> m b
--- logItem x =  (|> 
 
 --------------------------------------------------------------------------------
   -- Constructing the typechecking monad 'TcM'
@@ -145,9 +127,6 @@ newtype TcM a
    , MonadIO
    )
 
--- lctx :: Lens' TcState (Seq Fact)
--- lctx = lens (\(_tcState_context -> Ctx c) -> c) (\t c -> t { _tcState_context = Ctx c })
-
 counter :: Lens' TcState Int
 counter = lens _tcState_freshCounter (\t c -> t { _tcState_freshCounter = c })
 
@@ -158,9 +137,6 @@ ppInfer :: Ctx -> Expr -> IO ()
 ppInfer ctx ep = typecheck' pp $ infer ctx ep
  where
    pp (t, p, c) = pure ()
-    -- putTextLn ("expr : " <> pprExpr ep)
-    -- putTextLn ("type : " <> pprTy t)
-    -- putTextLn (pprCtx c)
 
 ppCheck :: TcM Ctx -> IO ()
 ppCheck = typecheck' pp
@@ -426,7 +402,7 @@ ctxWF (Ctx s)
   -- [Rule: MarkerCtx]
   ------------------------------------------------------------------------------
 
-  | s' :|> m@(FcMark {}) <- s
+  | s' :|> m@FcMark {} <- s
   , m `notElem` s'
   = True
 
@@ -543,12 +519,10 @@ unify ctx a b sort
   | TmUnVar alpha <- a
   , alpha `notElem` freeUnivs b
   , none (isUnEqOf alpha) (toList (let Ctx s = ctx in s))
-  = pure (ConCtx (ctx |> (FcUnEq alpha b)))
+  = pure (ConCtx (ctx |> FcUnEq alpha b))
 
   | otherwise
-  = do
-      liftIO (print (a,b))
-      throwError "unify"
+  = throwError "unify"
 
 isUnEqOf :: UnVar -> Fact -> Bool
 isUnEqOf un = \case
@@ -641,7 +615,9 @@ finally action cleanup = do
 
 -- | Logging wrapper for the real subtyping function.
 checkSubtype :: Ctx -> Polarity -> Ty -> Ty -> TcM Ctx
-checkSubtype = checkSubtype'
+checkSubtype c p t t' = do
+  logD (JRuleN (RuleName "!!!"))
+  checkSubtype' c p t t'
 
 -- | Given a context and a polarity p, check if a type is a p-subtype of
 -- another.
@@ -745,8 +721,8 @@ logPre = logD . Pre
 logPost :: PostData -> TcM ()
 logPost = logD . Post
 
-logRuleMatch :: Rule -> TcM ()
-logRuleMatch = logD . RuleMatch
+logRule :: Rule -> TcM ()
+logRule = logD . JMatchedRule
 
 logD :: JudgmentItem -> TcM ()
 logD j = do
@@ -798,7 +774,7 @@ check' ctx ep ty prin
   | EpUnit      <- ep
   , TyExVar ex  <- ty
   , Just (l, r) <- hole (FcExSort ex Star) ctx = do 
-    logRuleMatch (RuleCheck RUnitIntro_Extl)
+    logRule (RuleCheck RUnitIntro_Extl)
     pure (fillHole l (FcExEq ex Star TmUnit) r)
 
   ------------------------------------------------------------------------------
@@ -835,7 +811,7 @@ check' ctx ep ty prin
   , checkedIntroForm nu
   , TyForall alpha k a  <- ty
   , alpha'k             <- FcUnSort alpha k = do
-      logRuleMatch (RuleCheck RForallIntro)
+      logRule (RuleCheck RForallIntro)
       ctx' <- check (ctx |> alpha'k) nu a prin
       let Just (delta, theta) = hole alpha'k ctx'
       pure delta
@@ -904,7 +880,7 @@ check' ctx ep ty prin
   , EpLam x e           <- ep
   , TyArrow a b         <- ty
   , xap                 <- FcVarTy x a p = do
-      logRuleMatch (RuleCheck RArrowIntro)
+      logRule (RuleCheck RArrowIntro)
       let xap = FcVarTy x a p
       check (ctx |> xap) e b p
         <&> hole xap
@@ -918,15 +894,14 @@ check' ctx ep ty prin
   -- TODO reduce duplication, combine with ArrowIntro
   ------------------------------------------------------------------------------
 
-  | EpRec x nu <- ep
-  = withRule "Rec"
-  $ do
-      let xap = FcVarTy x ty prin
-      check (ctx |> xap) nu ty prin 
-        <&> hole xap
-        >>= \case 
-        Just (delta, theta) -> pure delta
-        _ -> throwError "lol"
+  | EpRec x nu <- ep = do
+    logRule (RuleCheck RRec)
+    let xap = FcVarTy x ty prin
+    check (ctx |> xap) nu ty prin 
+      <&> hole xap
+      >>= \case 
+      Just (delta, theta) -> pure delta
+      _ -> throwError "lol"
 
   -----------------------------------------------------------------------------
   -- [Rule: ArrowIntro-Extl]
@@ -1046,7 +1021,7 @@ check' ctx ep ty prin
   | EpCase e alts <- ep
   , _C <- ty
   , p <- prin = do
-    logRuleMatch (RuleCheck RCase)
+    logRule (RuleCheck RCase)
     let gamma = ctx
     (_A, Bang, theta) <- infer ctx e
     delta <- matchBranches theta alts [substituteCtx theta _A] _C p
@@ -1099,7 +1074,7 @@ infer' ctx ep = case ep of
 
   EpVar var
     | Just (ty, prin) <- varTyPrin ctx var -> do
-      logRuleMatch (RuleInfer RVar)
+      logRule (RuleInfer RVar)
       pure (substituteCtx ctx ty, prin, ctx)
 
   ------------------------------------------------------------------------------
@@ -1112,9 +1087,10 @@ infer' ctx ep = case ep of
   ------------------------------------------------------------------------------
 
   EpAnn e a
-    | prinTypeWF ctx a Bang -> withRule "Anno" $ do
-    delta <- check ctx e (substituteCtx ctx a) Bang
-    pure (substituteCtx delta a, Bang, delta)
+    | prinTypeWF ctx a Bang -> do
+      logRule (RuleInfer RAnno)
+      delta <- check ctx e (substituteCtx ctx a) Bang
+      pure (substituteCtx delta a, Bang, delta)
 
   ------------------------------------------------------------------------------
   -- [Rule: ArrowE]
@@ -1125,7 +1101,7 @@ infer' ctx ep = case ep of
 
   EpApp e spine
     | Spine [_] <- spine -> do
-      logRuleMatch (RuleInfer RArrowE)
+      logRule (RuleInfer RArrowE)
       (a, p, theta) <- infer ctx e
       (c, q, delta) <- inferSpineRecover theta spine a p
       pure (c, q, delta)
@@ -1210,7 +1186,7 @@ inferSpine' ctx sp ty p
   | TyForall alpha k a <- ty
   , Spine (e : s)      <- sp
   , alpha'             <- unToEx alpha = do 
-    logRuleMatch (RuleSpine RForallSpine)
+    logRule (RuleSpine RForallSpine)
     (c, q, delta)   <- inferSpine (ctx |> FcExSort alpha' k) sp
                                   (existentializeTy alpha a) Slash
     pure (c, q, delta)
@@ -1240,7 +1216,7 @@ inferSpine' ctx sp ty p
   ------------------------------------------------------------------------------
 
   | Spine [] <- sp = do
-    logRuleMatch (RuleSpine RNilSpine)
+    logRule (RuleSpine RNilSpine)
     pure (ty, p, ctx)
 
   ------------------------------------------------------------------------------
@@ -1252,7 +1228,7 @@ inferSpine' ctx sp ty p
   | TyArrow a b <- ty
   , Spine (e : s') <- sp
   , s <- Spine s' = do
-    logRuleMatch (RuleSpine RArrowSpine)
+    logRule (RuleSpine RArrowSpine)
     -- match the "function" against the input type a
     theta <- check ctx e a p
     -- match the "argument" against the output type b
@@ -1316,7 +1292,7 @@ inferSpineRecover' ctx s a p = do
   res1 <- inferSpine ctx s a Bang
   case res1 of
     (c, Slash, delta) | noFreeExtls c -> do
-      logRuleMatch (RuleSpineRecover RSpineRecover)
+      logRule (RuleSpineRecover RSpineRecover)
       pure (c, Bang, delta)
     _ -> do
 
@@ -1326,7 +1302,7 @@ inferSpineRecover' ctx s a p = do
   -- WT: guessing "pass" is for "pass the principality inferred by
   -- inferSpine through"
   ------------------------------------------------------------------------------
-      logRuleMatch (RuleSpineRecover RSpinePass)
+      logRule (RuleSpineRecover RSpinePass)
       res2 <- inferSpine ctx s a p
       case res2 of
         res@(c, q, delta)
@@ -1337,7 +1313,8 @@ inferSpineRecover' ctx s a p = do
 -- | Check case-expressions.
 -- Wrapper for @matchBranches'@.
 matchBranches :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
-matchBranches ctx alts ts ty p = logRecur (matchBranches' ctx alts ts ty p)
+matchBranches ctx alts ts ty p = logRecur $ do
+  matchBranches' ctx alts ts ty p
 
 -- | Check case-expressions.
 -- Given an input context, a case-expression, a type-vector, and a 
@@ -1349,7 +1326,7 @@ matchBranches' :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
 -- [Rule: MatchNil]
 ------------------------------------------------------------------------------
 matchBranches' gamma (Alts []) _ _ _ = do
-  logRuleMatch (RuleMatchBranches RMatchNil)
+  logRule (RuleMatch RMatchNil)
   pure gamma
 
 ------------------------------------------------------------------------------
@@ -1360,7 +1337,7 @@ matchBranches' gamma (Alts []) _ _ _ = do
 -- only branch checks against it.
 ------------------------------------------------------------------------------
 matchBranches' gamma (Alts [Branch [] e]) [] _C p = do
-  logRuleMatch (RuleMatchBranches RMatchBase)
+  logRule (RuleMatch RMatchBase)
   delta <- check gamma e _C p
   pure delta
 
@@ -1368,14 +1345,15 @@ matchBranches' gamma (Alts [Branch [] e]) [] _C p = do
 -- [Rule: MatchSeq]
 ------------------------------------------------------------------------------
 matchBranches' gamma (Alts (pi : _Pi)) _A _C p = do 
-  logRuleMatch (RuleMatchBranches RMatchSeq)
+  logRule (RuleMatch RMatchSeq)
   theta <- matchBranch gamma pi _A _C p
   delta <- matchBranches theta (Alts _Pi) _A _C p
   pure delta
 
 -- | Check case-expressions with a single branch (essentially a let?)
 matchBranch :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
-matchBranch ctx b ts ty p = do
+matchBranch ctx b ts ty p = logRecur $ do
+  logPre (PreMatch ctx b ts ty p)
   matchBranch' ctx b ts ty p
 
 -- | Check case-expressions with a single branch (essentially a let?)
@@ -1385,39 +1363,41 @@ matchBranch' :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
 --
 -- FIXME[paper]: The paper doesn't seem to allow () in patterns.
 ------------------------------------------------------------------------------
-matchBranch' gamma (Branch (PatUnit:ps) e) (TyUnit:ts) ty p = withRule "MatchUnit" $ do 
+matchBranch' gamma (Branch (PatUnit:ps) e) (TyUnit:ts) ty p = do 
+  logRule (RuleMatch RMatchUnit)
   delta <- matchBranches gamma (Alts [Branch ps e]) ts ty p
   pure delta 
 
 ------------------------------------------------------------------------------
--- [Rule: MatchPlus_k]
+-- [Rule: MatchInj_k]
 --
 -- Match an "Either" pattern.
 ------------------------------------------------------------------------------
-matchBranch' gamma (Branch (PatInj k rho:ps) e) (TySum _A1 _A2:_As) ty p =
-  withRule "MatchPlus_k" $ do
-    let _Ak = if k == InjL then _A1 else _A2
-    delta <- matchBranches gamma (Alts [Branch (rho : ps) e]) (_Ak : _As) ty p
-    pure delta
+matchBranch' gamma (Branch (PatInj k rho:ps) e) (TySum _A1 _A2:_As) ty p = do
+  logRule (RuleMatch (RMatchInj k))
+  let _Ak = if k == InjL then _A1 else _A2
+  delta <- matchBranches gamma (Alts [Branch (rho : ps) e]) (_Ak : _As) ty p
+  pure delta
 
-matchBranch' gamma (Branch (PatWild:ps) e) (_A:_As) _C p =
-  withRule "MatchWild" $ do
-    unless (notQuantifierHead _A) (throwError "quantifier-headed type")
-    delta <- matchBranches gamma (Alts [Branch ps e]) _As _C p
-    pure delta
+matchBranch' gamma (Branch (PatWild:ps) e) (_A:_As) _C p = do
+  logRule (RuleMatch RMatchWild)
+  unless (notQuantifierHead _A) (throwError "quantifier-headed type")
+  delta <- matchBranches gamma (Alts [Branch ps e]) _As _C p
+  pure delta
 
-matchBranch' gamma (Branch (PatVec Nil:ps) e) (TyVec t _A:_As) _C p =
-  withRule "MatchNil" $ do
-    delta <- matchBranchesAssuming gamma
-                                   (Equation t (TmNat Zero))
-                                   (Alts [Branch ps e])
-                                   _As
-                                   _C
-                                   p
-    pure delta
+matchBranch' gamma (Branch (PatVec Nil:ps) e) (TyVec t _A:_As) _C p = do
+  logRule (RuleMatch RMatchNil)
+  delta <- matchBranchesAssuming gamma
+                                 (Equation t (TmNat Zero))
+                                 (Alts [Branch ps e])
+                                 _As
+                                 _C
+                                 p
+  pure delta
 
-matchBranch' gamma (Branch ps e) ts t p =
-  withRule "default" $ liftIO (print ps) *> throwError "foo"
+matchBranch' gamma (Branch ps e) ts t p = do
+  logRule RuleFail
+  throwError "matchBranch'"
 
 matchBranchesAssuming :: Ctx -> Prop -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
 matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p
