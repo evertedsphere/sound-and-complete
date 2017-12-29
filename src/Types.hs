@@ -262,7 +262,8 @@ data PreData
   | PreCheck Ctx Expr Ty Prin
   | PreSpine Ctx Spine Ty Prin
   | PreSpineRecover Ctx Spine Ty Prin
-  | PreMatch Ctx Branch [Ty] Ty Prin
+  | PreMatch Ctx Alts [Ty] Ty Prin
+  | PreElimeq Ctx Tm Tm Sort
 
 data PostData
   = PostCheck Ctx
@@ -270,6 +271,7 @@ data PostData
   | PostSpine Ty Prin Ctx
   | PostSpineRecover Ty Prin Ctx
   | PostMatch Ctx
+  | PostElimeq PICtx
 
 newtype RuleName = RuleName Text
 
@@ -280,6 +282,7 @@ data Rule
   | RuleSpineRecover SpineRecoverRule
   | RuleMatch MatchRule
   | RuleMatchAssuming MatchAssumingRule
+  | RuleElimeq ElimeqRule
   | RuleFail Judgment
 
 data SpineRule
@@ -300,6 +303,7 @@ data CheckRule
   | RCase 
   | RRec
   | RUnitIntro_Extl 
+  | RArrowIntro_Extl
   deriving Show
 
 data InferRule 
@@ -328,8 +332,21 @@ data MatchAssumingRule
   | RMatchUnify
   deriving Show
 
+data ElimeqRule
+  = RElimeqUVarRefl
+  | RElimeqZero
+  | RElimeqSucc
+  | RElimeqUvarL
+  | RElimeqUvarR
+  | RElimeqUvarLBottom
+  | RElimeqUvarRBottom
+  | RElimeqUnit
+  | RElimeqBin
+  | RElimeqBinBot
+  | RElimeqClash
+  deriving Show
+
 data Tree a = Leaf a | Rose [Tree a]
-  deriving Foldable
 
 data LogItem a = LogItem { _logItem_depth :: Int, _logItem_message :: a }
 
@@ -341,4 +358,5 @@ data Judgment
   | JMatch 
   | JMatchAssuming
   | JTypeWF
+  | JElimeq
   deriving Show

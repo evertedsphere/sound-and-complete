@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleInstances          #-}
 {-# LANGUAGE ScopedTypeVariables          #-}
-{-# LANGUAGE TypeApplications          #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
 {-# LANGUAGE NoImplicitPrelude          #-}
@@ -367,7 +366,9 @@ pprVec (Vec xs) = go xs
     consPrec ^^ hsep [(consPrec + 1) %% ppr x, fmtKw "::", consPrec %% go xs]
 
 pprCtx :: Ctx -> OutM
-pprCtx (Ctx s) = align (fsep (map ppr (toList s)))
+pprCtx (Ctx s) = case s of
+  Empty -> "<empty>"
+  _ -> align (fsep (map ppr (toList s)))
 
 pprProp :: Prop -> OutM
 pprProp (Equation a b) = angles (ppr a <+> "=" <+> ppr b)
@@ -448,10 +449,18 @@ pprPreData = \case
   PreSpineRecover ctx ep ty prin -> ppr_cetp "SpineRecover" ctx ep ty prin
   PreMatch ctx b t ts p          -> vcat
     [ lhs "pre" <+> fmtJ "Match"
+    , lhs "alts" <+> ppr b
     , lhs "type" <+> ppr t
     , lhs "types" <+> ppr ts
     , lhs "prin" <+> ppr p
     , lhs "ctx" <+> ppr ctx
+    ]
+  PreElimeq c t t' s -> vcat
+    [ lhs "pre" <+> fmtJ "Elimeq"
+    , lhs "lhs" <+> ppr t
+    , lhs "rhs" <+> ppr t'
+    , lhs "sort" <+> ppr s
+    , lhs "ctx" <+> ppr c
     ]
  where
   ppr_cetp rule ctx ep ty prin = vcat
@@ -471,6 +480,7 @@ pprRule = \case
   RuleSpine         r -> rule "Spine" r
   RuleSpineRecover  r -> rule "SpineRecover" r
   RuleMatchAssuming r -> rule "MatchAssuming" r
+  RuleElimeq        r -> rule "Elimeq" r
   RuleFail          j -> vcat
     [ lhs "judgment" <+> fmtJ (pure (P.pretty (TL.drop 1 (tshow j))))
     , lhs "rule" <+> fmtRed "FAIL: no rules matched"

@@ -164,10 +164,10 @@ typecheck' f action = do
 
   -- putTextLn "Judgment structure:\n\n"
 
-  let isRuleMatch = \case
-        JMatchedRule{} -> True
-        _ -> False
-  Pretty.renderStdout (logToTree (S.filter (isRuleMatch . _logItem_message) logLines))
+  -- let isRuleMatch = \case
+  --       JMatchedRule{} -> True
+  --       _ -> False
+  -- Pretty.renderStdout (logToTree (S.filter (isRuleMatch . _logItem_message) logLines))
 
   putTextLn ""
 
@@ -179,6 +179,15 @@ typecheck' f action = do
 -- | Filter a context for a fact that satisfies a predicate.
 factWith :: (Fact -> Bool) -> Ctx -> Maybe Fact
 factWith pred (Ctx s) = s & S.filter pred & toList & headMay
+
+-- | Search the context for a fact that solves an existential variable, and
+-- return the sort contained in the fact.
+solvedUnVar :: Ctx -> UnVar -> Bool
+solvedUnVar ctx un = isJust (factWith (solvedUnVar' un) ctx)
+ where
+  solvedUnVar' e1 (FcUnEq e2 _) = e1 == e2
+  solvedUnVar' _  _             = False
+
 
 -- | Search the context for a fact that solves an existential variable, and
 -- return the sort contained in the fact.
@@ -484,52 +493,62 @@ unifyInfer ctx a b = do
 -- | Unify two terms or monotypes, taking context ctx = \Gamma to either a
 -- modified context \Delta or inconsistency.
 unify :: Ctx -> Tm -> Tm -> Sort -> TcM PICtx
-unify ctx a b sort
+unify ctx a b sort = logRecur $ do
+  logPre (PreElimeq ctx a b sort)
+  o <- go 
+  -- logPost (PostElimeq o)
+  pure o
+    
+  where 
+  go
+    -- [Rule: ElimeqUVarRefl]
+    | TmUnVar{} <- a
+    , a == b = do 
+      logRule (RuleElimeq RElimeqUVarRefl)
+      pure (ConCtx ctx)
 
-  -- [Rule: ElimeqUVarRefl]
+    -- [Rule: ElimeqUnit]
 
-  | TmUnVar{} <- a
-  , a == b
-  = do --sort <- inferSort ctx a
-       pure (ConCtx ctx)
+    | TmUnit <- a
+    , TmUnit <- b = do
+      logRule (RuleElimeq RElimeqUnit)
+      pure (ConCtx ctx)
 
-  -- [Rule: ElimeqUnit]
+    -- [Rule: ElimeqZero]
 
-  | TmUnit <- a
-  , TmUnit <- b
-  = pure (ConCtx ctx)
+    | TmNat Zero <- a
+    , TmNat Zero <- b = do
+      logRule (RuleElimeq RElimeqZero)
+      pure (ConCtx ctx)
 
-  -- [Rule: ElimeqZero]
+    -- [Rule: ElimeqSucc]
 
-  | TmNat Zero <- a
-  , TmNat Zero <- b
-  = pure (ConCtx ctx)
-
-  -- [Rule: ElimeqSucc]
-
-  | TmNat (Succ sigma) <- a
-  , TmNat (Succ tau)   <- b
-  , Nat <- sort
-  = do
+    | TmNat (Succ sigma) <- a
+    , TmNat (Succ tau)   <- b
+    , Nat <- sort = do
+      logRule (RuleElimeq RElimeqSucc)
       res <- unify ctx (TmNat sigma) (TmNat tau) sort
       case res of
         ConCtx _ -> pure res
         _ -> throwError "lol"
 
-  -- [Rule: ElimeqClash]
+    -- [Rule: ElimeqUVarL]
+    
+    | TmUnVar alpha <- a = do
+      logRule (RuleElimeq RElimeqUvarL)
+      unless (alpha `notElem` freeUnivs ctx b) (logMsg JElimeq "not free" *> throwError "die")
+      unless (none (isUnEqOf alpha) (toList (let Ctx s = ctx in s))) (throwError "")
+      pure (ConCtx (ctx |> FcUnEq alpha b))
 
-  | headConClash a b
-  = pure Bottom
+    -- [Rule: ElimeqClash]
 
-  -- [Rule: ElimeqUVarL]
-  
-  | TmUnVar alpha <- a
-  , alpha `notElem` freeUnivs b
-  , none (isUnEqOf alpha) (toList (let Ctx s = ctx in s))
-  = pure (ConCtx (ctx |> FcUnEq alpha b))
+    | headConClash a b = do
+      logRule (RuleElimeq RElimeqClash)
+      pure Bottom
 
-  | otherwise
-  = throwError "unify"
+    | otherwise = do
+      logRule (RuleFail JElimeq)
+      throwError "unify"
 
 isUnEqOf :: UnVar -> Fact -> Bool
 isUnEqOf un = \case
@@ -923,22 +942,22 @@ check' ctx ep ty prin
   , EpLam x e            <- ep
   , TyExVar ex@a'        <- ty
   , Just Star            <- exVarSort ctx ex
-  , Just (left, right)   <- hole (FcExSort ex Star) ctx
-  = withRule "ArrowIntro-Extl" $ do
-      a'1 <- freshEx
-      a'2 <- freshEx
+  , Just (left, right)   <- hole (FcExSort ex Star) ctx = do
+    logRule (RuleCheck RArrowIntro_Extl)
+    a'1 <- freshEx
+    a'2 <- freshEx
 
-      let xa'1  = FcVarTy x (TyExVar a'1) Slash
-          a'eq  = FcExEq a' Star (TmArrow (TmExVar a'1) (TmExVar a'2))
-          a'1s  = FcExSort a'1 Star
-          a'2s  = FcExSort a'2 Star
-          ctx'  = left <> Ctx [a'1s, a'2s, a'eq] <> right
-          ctx'' = ctx' |> xa'1
+    let xa'1  = FcVarTy x (TyExVar a'1) Slash
+        a'eq  = FcExEq a' Star (TmArrow (TmExVar a'1) (TmExVar a'2))
+        a'1s  = FcExSort a'1 Star
+        a'2s  = FcExSort a'2 Star
+        ctx'  = left <> Ctx [a'1s, a'2s, a'eq] <> right
+        ctx'' = ctx' |> xa'1
 
-      out <- check ctx'' e (TyExVar a'2) Slash
-      case hole xa'1 out of
-        Just (delta, _) -> pure delta
-        _ -> throwError "lol"
+    out <- check ctx'' e (TyExVar a'2) Slash
+    case hole xa'1 out of
+      Just (delta, _) -> pure delta
+      _ -> throwError "lol"
 
   -----------------------------------------------------------------------------
   -- SumIntroₖ
@@ -1137,9 +1156,11 @@ freeExtls ctx ty = filter (isFree ctx) exs
     exs = childrenBi ty
     isFree ctx ex = isNothing (solvedExVarSort ctx ex)
 
--- | The free existential variables in a ter.
-freeUnivs :: Tm -> [UnVar]
-freeUnivs = childrenBi
+-- | The free universal variables in a ter.
+freeUnivs :: Ctx -> Tm -> [UnVar]
+freeUnivs ctx tm = filter (solvedUnVar ctx) uns
+  where
+    uns = childrenBi tm
 
 -- | A synonym for @freeExtls@ matching the notation from the paper.
 fev :: Ctx -> Ty -> [ExVar]
@@ -1302,14 +1323,14 @@ inferSpineRecover' ctx s a p = do
   -- Upgrade a suitable nonprincipal type with no free existential
   -- tyvars into a principal type.
   ------------------------------------------------------------------------------
-  
   res1 <- inferSpine ctx s a Bang
   case res1 of
     (c, Slash, delta) -> do
       let fevCond = noFreeExtls delta c 
       if fevCond then do
-        logMsg JSpineRecover "no free existential variables"
+        logMsg JSpineRecover "No free existential variables. Recovering principality."
         logRule (RuleSpineRecover RSpineRecover)
+
         pure (c, Bang, delta)
       else do
         ------------------------------------------------------------------------------
@@ -1318,10 +1339,9 @@ inferSpineRecover' ctx s a p = do
         -- WT: guessing "pass" is for "pass the principality inferred by
         -- inferSpine through"
         ------------------------------------------------------------------------------
-
-        logMsg JSpineRecover "free existential variables"
-
+        logMsg JSpineRecover "Free existential variables, passing principality through."
         logRule (RuleSpineRecover RSpinePass)
+
         res2 <- inferSpine ctx s a p
         case res2 of
           res@(c, q, delta)
@@ -1333,7 +1353,10 @@ inferSpineRecover' ctx s a p = do
 -- Wrapper for @matchBranches'@.
 matchBranches :: Ctx -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
 matchBranches ctx alts ts ty p = logRecur $ do
-  matchBranches' ctx alts ts ty p
+  logPre (PreMatch ctx alts ts ty p)
+  ctx' <- matchBranches' ctx alts ts ty p
+  logPost (PostMatch ctx')
+  pure ctx'
 
 -- | Check case-expressions.
 -- Given an input context, a case-expression, a type-vector, and a 
@@ -1359,52 +1382,39 @@ matchBranches' gamma (Alts [Branch [] e]) [] _C p = do
   logRule (RuleMatch RMatchBase)
   delta <- check gamma e _C p
   pure delta
-
-------------------------------------------------------------------------------
--- [Rule: MatchSeq]
-------------------------------------------------------------------------------
-matchBranches' gamma (Alts (pi : _Pi)) _A _C p = do 
-  logRule (RuleMatch RMatchSeq)
-  theta <- matchBranch gamma pi _A _C p
-  delta <- matchBranches theta (Alts _Pi) _A _C p
-  pure delta
-
--- | Check case-expressions with a single branch (essentially a let?)
-matchBranch :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
-matchBranch ctx b ts ty p = logRecur $ do
-  logPre (PreMatch ctx b ts ty p)
-  matchBranch' ctx b ts ty p
-
--- | Check case-expressions with a single branch (essentially a let?)
-matchBranch' :: Ctx -> Branch -> [Ty] -> Ty -> Prin -> TcM Ctx
 ------------------------------------------------------------------------------
 -- [Rule: MatchUnit]
 --
 -- FIXME[paper]: The paper doesn't seem to allow () in patterns.
 ------------------------------------------------------------------------------
-matchBranch' gamma (Branch (PatUnit:ps) e) (TyUnit:ts) ty p = do 
+matchBranches' gamma (Alts [Branch (PatUnit:ps) e]) (TyUnit:ts) ty p = do 
   logRule (RuleMatch RMatchUnit)
   delta <- matchBranches gamma (Alts [Branch ps e]) ts ty p
   pure delta 
+
+matchBranches' gamma (Alts [Branch (PatProd p1 p2:ps) e]) (TyProd _A1 _A2:_As) ty p = do
+  logRule (RuleMatch RMatchProd)
+  delta <- matchBranches gamma (Alts [Branch (p1 : p2 : ps) e]) (_A1 : _A2 : _As) ty p
+  pure delta
 
 ------------------------------------------------------------------------------
 -- [Rule: MatchInj_k]
 --
 -- Match an "Either" pattern.
 ------------------------------------------------------------------------------
-matchBranch' gamma (Branch (PatInj k rho:ps) e) (TySum _A1 _A2:_As) ty p = do
+matchBranches' gamma (Alts [Branch (PatInj k rho:ps) e]) (TySum _A1 _A2:_As) ty p = do
   logRule (RuleMatch (RMatchInj k))
   let _Ak = if k == InjL then _A1 else _A2
   delta <- matchBranches gamma (Alts [Branch (rho : ps) e]) (_Ak : _As) ty p
   pure delta
 
-matchBranch' gamma (Branch (PatWild:ps) e) (_A:_As) _C p = do
+matchBranches' gamma (Alts [Branch (PatWild:ps) e]) (_A:_As) _C p = do
   logRule (RuleMatch RMatchWild)
   unless (notQuantifierHead _A) (throwError "quantifier-headed type")
   delta <- matchBranches gamma (Alts [Branch ps e]) _As _C p
   pure delta
 
-matchBranch' gamma (Branch (PatVec Nil:ps) e) (TyVec t _A:_As) _C p = do
+matchBranches' gamma (Alts [Branch (PatVec Nil:ps) e]) (TyVec t _A:_As) _C p = do
   logRule (RuleMatch RMatchNil)
   delta <- matchBranchesAssuming gamma
                                  (Equation t (TmNat Zero))
@@ -1414,22 +1424,36 @@ matchBranch' gamma (Branch (PatVec Nil:ps) e) (TyVec t _A:_As) _C p = do
                                  p
   pure delta
 
-matchBranch' gamma (Branch ps e) ts t p = do
-  logRule (RuleFail JMatch)
-  throwError "matchBranch'"
+------------------------------------------------------------------------------
+-- [Rule: MatchSeq]
+------------------------------------------------------------------------------
+matchBranches' gamma (Alts (pi : _Pi)) _A _C p = do 
+  logRule (RuleMatch RMatchSeq)
+  theta <- matchBranches gamma (Alts [pi]) _A _C p
+  delta <- matchBranches theta (Alts _Pi) _A _C p
+  pure delta
+
+-- matchBranches' _ _ _ _ _ = do
+--   logRule (RuleFail JMatch)
+--   throwError "matchBranch'"
 
 matchBranchesAssuming :: Ctx -> Prop -> Alts -> [Ty] -> Ty -> Prin -> TcM Ctx
-matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p
-  | length bs /= 1 = throwError "too many branches"
-  | otherwise = do
-    (ctx', sort) <- unifyInfer gamma lt rt
-    case ctx' of
-      Bottom   -> pure gamma
-      ConCtx{} -> do
-        ConCtx theta <- unify (gamma |> FcPropMark prop) lt rt sort
-        ctx''        <- matchBranches theta alts ts ty p
-        let Just (delta, delta') = hole (FcPropMark prop) ctx''
-        pure delta
+matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p = do
+  -- logPre (PreMatchAssuming gamma prop alts ts ty p)
+  go
+
+  where
+    go
+      | length bs /= 1 = throwError "too many branches"
+      | otherwise = do
+        (ctx', sort) <- unifyInfer gamma lt rt
+        case ctx' of
+          Bottom   -> pure gamma
+          ConCtx{} -> do
+            ConCtx theta <- unify (gamma |> FcPropMark prop) lt rt sort
+            ctx''        <- matchBranches theta alts ts ty p
+            let Just (delta, delta') = hole (FcPropMark prop) ctx''
+            pure delta
 
 --------------------------------------------------------------------------------
 -- [Coverage checking]
@@ -1452,8 +1476,7 @@ matchBranchesAssuming gamma prop@(Equation lt rt) alts@(Alts bs) ts ty p
 -- types in [A..].
 
 coverageCheck :: Ctx -> Alts -> [Ty] -> TcM Bool
-coverageCheck ctx alts tys = 
-  -- liftIO (putStrLn ("cov : " ++ show (ctx,alts,tys)))
+coverageCheck ctx alts tys = do
   logRecur (coverageCheck' ctx alts tys)
 
 coverageCheck' :: Ctx -> Alts -> [Ty] -> TcM Bool
