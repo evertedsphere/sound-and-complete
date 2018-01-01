@@ -32,16 +32,23 @@ type OutEndo = OutM -> OutM
 type OutFold = forall f. Foldable f => f OutM -> OutM
 
 renderStdout :: AnsiPretty a => a -> IO ()
-renderStdout = TL.putStrLn . renderText
+renderStdout = renderStdout' id
 
-renderText :: AnsiPretty a => a -> TL.Text
-renderText =
+renderStdout' :: AnsiPretty a => (OutM -> OutM) -> a -> IO ()
+renderStdout' f = TL.putStrLn . renderText' f
+
+renderText' :: AnsiPretty a => (OutM -> OutM) -> a -> TL.Text
+renderText' f =
   TL.replace "\\e" "\ESC"
     . renderLazy
     . P.layoutPretty layoutOpts
     . runPprM
+    . f
     . ppr
-  where layoutOpts = P.LayoutOptions (P.AvailablePerLine 100 1.0)
+  where layoutOpts = P.LayoutOptions (P.AvailablePerLine 110 1.0)
+
+renderText :: AnsiPretty a => a -> TL.Text
+renderText = renderText' id
 
 liftOutM :: (Foldable t) => ([a] -> b) -> t (PprM a) -> PprM b
 liftOutM f = map f . sequence . toList
@@ -141,7 +148,7 @@ wrapOn c f = if c then f else id
 above :: Int -> (PprM a -> PprM a) -> PprM a -> PprM a
 above p f m = do
   outerPrec <- view precedence
-  wrapOn (outerPrec >>> p) f (assoc (p + 1) m)
+  wrapOn (outerPrec > p) f (assoc (p + 1) m)
 
 infixr 8 ^^
 prec ^^ body = above prec parens body
@@ -151,6 +158,7 @@ nowrap = assoc (-1)
 
 instance (a ~ Out) => IsString (PprM a) where fromString = pure . fromString
 
+instance AnsiPretty OutM where ppr = id
 instance AnsiPretty Expr where ppr = pprExpr
 instance AnsiPretty Alts where ppr = pprAlts
 instance AnsiPretty Tm where ppr = pprTm
@@ -190,9 +198,6 @@ a <-> b = vsep [a, b]
 
 (<@>) :: OutM -> OutM -> OutM
 a <@> b = vcat [a, b]
-
-id :: a -> a
-id x = x
 
 fmtSort = annotate (color Blue)
 
@@ -419,6 +424,7 @@ pprPostData = \case
   PostSpine ty pr ctx -> ppr_tpc "Spine" ty pr ctx
   PostSpineRecover ty pr ctx -> ppr_tpc "SpineRecover" ty pr ctx
   PostMatch ctx -> vcat [lhs "post" <+> fmtJ "Match", lhs "ctx" <+> ppr ctx]
+  PostSubtype ctx -> vcat [lhs "post" <+> fmtJ "Subtype", lhs "ctx" <+> ppr ctx]
  where
   ppr_tpc rule ty pr ctx = vcat
     [ lhs "post" <+> fmtJ "Spine"
@@ -447,11 +453,11 @@ pprPreData = \case
     ]
   PreSpine        ctx ep ty prin -> ppr_cetp "Spine" ctx ep ty prin
   PreSpineRecover ctx ep ty prin -> ppr_cetp "SpineRecover" ctx ep ty prin
-  PreMatch ctx b t ts p          -> vcat
+  PreMatch ctx b ts t p          -> vcat
     [ lhs "pre" <+> fmtJ "Match"
     , lhs "alts" <+> ppr b
     , lhs "type" <+> ppr t
-    , lhs "types" <+> ppr ts
+    , lhs "types" <+> hsep (map ppr ts)
     , lhs "prin" <+> ppr p
     , lhs "ctx" <+> ppr ctx
     ]
@@ -461,6 +467,13 @@ pprPreData = \case
     , lhs "rhs" <+> ppr t'
     , lhs "sort" <+> ppr s
     , lhs "ctx" <+> ppr c
+    ]
+  PreSubtype c pol tl tr -> vcat
+    [ lhs "pre" <+> fmtJ "Subtype"
+    , lhs "ctx" <+> ppr c
+    , lhs "pol" <+> ppr pol
+    , lhs "left-ty" <+> ppr tl
+    , lhs "right-ty" <+> ppr tr
     ]
  where
   ppr_cetp rule ctx ep ty prin = vcat
@@ -481,6 +494,7 @@ pprRule = \case
   RuleSpineRecover  r -> rule "SpineRecover" r
   RuleMatchAssuming r -> rule "MatchAssuming" r
   RuleElimeq        r -> rule "Elimeq" r
+  RuleSubtype       r -> rule "Subtype" r
   RuleFail          j -> vcat
     [ lhs "judgment" <+> fmtJ (pure (P.pretty (TL.drop 1 (tshow j))))
     , lhs "rule" <+> fmtRed "FAIL: no rules matched"
@@ -503,7 +517,7 @@ pprTree = \case
   Rose as -> vsep (map (indent treeIndentWidth . align . (<-> "") . ppr) as)
 
 pprLogItem :: AnsiPretty a => LogItem a -> OutM
-pprLogItem (LogItem d m) = fill 3 (pure (pretty d)) <+> ":" <+> align (ppr m)
+pprLogItem (LogItem d m) = if (d > 30) then unimplemented else fill 3 (pure (pretty d)) <+> ":" <+> align (ppr m)
 
 pprJudgment :: Judgment -> OutM
 pprJudgment = pure . P.pretty . TL.drop 1 . tshow

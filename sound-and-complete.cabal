@@ -44,5 +44,6 @@ executable repl
     , hashable
     , unordered-containers
     , exceptions
+    , QuickCheck
     , uniplate
   default-language: Haskell2010

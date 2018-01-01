@@ -42,12 +42,6 @@ module Overture
   , Writer'
   , WriterT'
   , runWriterT'
-
-  , (<)
-  , (>)
-
-  , (<<<)
-  , (>>>)
   ) where
 
 import Prelude hiding
@@ -55,12 +49,9 @@ import Prelude hiding
   , undefined
   , map
   , concat
-  , id
   , (.)
   , String
   , (!!)
-  , (<)
-  , (>)
   )
 
 import qualified Data.Text.Lazy      as LText
@@ -96,7 +87,7 @@ import Data.Void as X (Void, absurd, vacuous)
 import Data.Kind as X (Constraint, Type)
 
 import Control.Lens as X
-import Control.Arrow as X hiding ((<<<), (>>>))
+import Control.Arrow as X
 import Control.Category as X ((.))
 
 import qualified Control.Category as Category
@@ -299,38 +290,6 @@ runWriterT' = SWriter.runWriterT
 runStateT' :: StateT' s m a -> s -> m (a, s)
 runStateT' = SState.runStateT
 {-# INLINE runStateT' #-}
-
-infixr 9 <
-
-(<)
-  :: forall (cat :: k -> k -> Type) (b :: k) (c :: k) (a :: k)
-   . Category.Category cat
-  => cat b c
-  -> cat a b
-  -> cat a c
-(<) = (Arrow.<<<)
-{-# INLINE (<) #-}
-
-infixr 1 >
-
-(>)
-  :: forall (cat :: k -> k -> Type) (b :: k) (c :: k) (a :: k)
-   . Category.Category cat
-  => cat a b
-  -> cat b c
-  -> cat a c
-(>) = (Arrow.>>>)
-{-# INLINE (>) #-}
-
-infix 4 >>>
-(>>>) :: Ord a => a -> a -> Bool
-(>>>) = (P.>)
-{-# INLINE (>>>) #-}
-
-infix 4 <<<
-(<<<) :: Ord a => a -> a -> Bool
-(<<<) = (P.<)
-{-# INLINE (<<<) #-}
 
 -- These are pretty useless since (<$) and ($>) exist
 -- (&>) :: Functor f => b -> f a -> f b

@@ -22,7 +22,7 @@ let
   };
 
 in
-  rien.shell {
+  (rien.shell {
     # Generate Hoogle documentation?
     wantHoogle = true;
 
@@ -48,6 +48,7 @@ in
       text
       uniplate
       unordered-containers
+      QuickCheck
     ];
 
     # Optionally, also add sets of related packages that are
@@ -60,4 +61,4 @@ in
     nativeDeps = pkgs: with pkgs; [ 
       z3 # for liquidhaskell
     ];
-  }
+  }) // { shellHook = "source setup-ghcmod.sh"; } 
