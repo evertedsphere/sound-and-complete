@@ -37,18 +37,28 @@ renderStdout = renderStdout' id
 renderStdout' :: AnsiPretty a => (OutM -> OutM) -> a -> IO ()
 renderStdout' f = TL.putStrLn . renderText' f
 
-renderText' :: AnsiPretty a => (OutM -> OutM) -> a -> TL.Text
-renderText' f =
-  TL.replace "\\e" "\ESC"
+renderText'' :: AnsiPretty a => Bool -> (OutM -> OutM) -> a -> TL.Text
+renderText'' c f =
+   TL.replace "\\e" "\ESC"
     . renderLazy
     . P.layoutPretty layoutOpts
     . runPprM
+    . (if c then id else map P.unAnnotate)
     . f
     . ppr
   where layoutOpts = P.LayoutOptions (P.AvailablePerLine 110 1.0)
 
+renderText' :: AnsiPretty a => (OutM -> OutM) -> a -> TL.Text
+renderText' = renderText'' True
+
 renderText :: AnsiPretty a => a -> TL.Text
 renderText = renderText' id
+
+renderString :: AnsiPretty a => a -> [Char]
+renderString = TL.unpack . renderText
+
+renderPlainString :: AnsiPretty a => a -> [Char]
+renderPlainString = TL.unpack . renderText'' False id
 
 liftOutM :: (Foldable t) => ([a] -> b) -> t (PprM a) -> PprM b
 liftOutM f = map f . sequence . toList
@@ -73,6 +83,9 @@ group = map P.group
 
 annotate :: AnsiStyle -> OutEndo
 annotate = map . P.annotate
+
+unAnnotate :: OutEndo
+unAnnotate = map P.unAnnotate
 
 parens, angles, braces, brackets :: OutEndo
 parens = map P.parens
@@ -172,7 +185,7 @@ instance AnsiPretty Prop where ppr = pprProp
 instance AnsiPretty Sort where ppr = pprSort
 instance AnsiPretty Fact where ppr = pprFact
 instance AnsiPretty Spine where ppr = pprSpine
-instance AnsiPretty Ctx where ppr = pprCtx
+instance AnsiPretty TcCtx where ppr = pprCtx
 instance AnsiPretty Pat where ppr = pprPat
 instance AnsiPretty a => AnsiPretty (Vec a) where ppr = pprVec
 instance AnsiPretty Var   where ppr = pprVar
@@ -321,18 +334,13 @@ pprExpr = align . go
   go = \case
     EpUnit -> "Unit"
     EpLam var e ->
-      fmtLam "\\"
-        <>  nowrap (ppr var)
-        <+> fmtLamArrow "->"
-        <+> lamPrec
-        ^^  lamPrec
-        %%  go e
+      lamPrec ^^ (fmtLam "\\" <> nowrap (ppr var) <+> fmtLamArrow "->" <+> go e)
     EpRec var e ->
       fmtRec "rec" <+> nowrap (ppr var) <+> recPrec ^^ recPrec %% go e
     EpAnn e ty ->
       annPrec ^^ group (annPrec %% go e <-> ":" <+> annPrec %% ppr ty)
     EpVar s   -> ppr s
-    EpApp e s -> appPrec ^^ (fmtFunction (go e) <+> appPrec %% ppr s)
+    EpApp e s -> appPrec ^^ (appPrec %% go e <+> appPrec %% ppr s)
     -- EpInj s r -> sumPrec ^^ (sumPrec %% ppr r)
     EpProd l r ->
       prodPrec ^^ (prodPrec %% go l <+> ppr OpProd <+> prodPrec %% go r)
@@ -370,10 +378,10 @@ pprVec (Vec xs) = go xs
   go (x:xs) =
     consPrec ^^ hsep [(consPrec + 1) %% ppr x, fmtKw "::", consPrec %% go xs]
 
-pprCtx :: Ctx -> OutM
-pprCtx (Ctx s) = case s of
+pprCtx :: TcCtx -> OutM
+pprCtx (TcCtx s) = case s of
   Empty -> "<empty>"
-  _ -> align (fsep (map ppr (toList s)))
+  _     -> align (fsep (map ppr (toList s)))
 
 pprProp :: Prop -> OutM
 pprProp (Equation a b) = angles (ppr a <+> "=" <+> ppr b)
@@ -407,10 +415,12 @@ pprJudgmentItem = \case
   Pre          p   -> ppr p
   Post         p   -> ppr p
   JMatchedRule r   -> ppr r
-  JMsg r msg -> vcat [lhs "judgment" <+> fmtJ (ppr r), lhs "info" <+> fmtB (ppr msg)]
-    where lhs = fill 10
-          fmtB = annotate (color Cyan <> bold)
-          fmtJ = annotate (color Green <> bold)
+  JMsg r msg       -> vcat
+    [lhs "judgment" <+> fmtJ (ppr r), lhs "info" <+> fmtB (ppr msg)]
+   where
+    lhs  = fill 10
+    fmtB = annotate (color Cyan <> bold)
+    fmtJ = annotate (color Green <> bold)
 
 pprPostData :: PostData -> OutM
 pprPostData = \case
@@ -424,7 +434,8 @@ pprPostData = \case
   PostSpine ty pr ctx -> ppr_tpc "Spine" ty pr ctx
   PostSpineRecover ty pr ctx -> ppr_tpc "SpineRecover" ty pr ctx
   PostMatch ctx -> vcat [lhs "post" <+> fmtJ "Match", lhs "ctx" <+> ppr ctx]
-  PostSubtype ctx -> vcat [lhs "post" <+> fmtJ "Subtype", lhs "ctx" <+> ppr ctx]
+  PostSubtype ctx ->
+    vcat [lhs "post" <+> fmtJ "Subtype", lhs "ctx" <+> ppr ctx]
  where
   ppr_tpc rule ty pr ctx = vcat
     [ lhs "post" <+> fmtJ "Spine"
@@ -517,7 +528,9 @@ pprTree = \case
   Rose as -> vsep (map (indent treeIndentWidth . align . (<-> "") . ppr) as)
 
 pprLogItem :: AnsiPretty a => LogItem a -> OutM
-pprLogItem (LogItem d m) = if (d > 30) then unimplemented else fill 3 (pure (pretty d)) <+> ":" <+> align (ppr m)
+pprLogItem (LogItem d m) = if (d > 30)
+  then unimplemented
+  else fill 3 (pure (pretty d)) <+> ":" <+> align (ppr m)
 
 pprJudgment :: Judgment -> OutM
 pprJudgment = pure . P.pretty . TL.drop 1 . tshow

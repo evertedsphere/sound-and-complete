@@ -54,12 +54,6 @@ data Expr
 
 instance Plated Expr 
 
-isValue :: Expr -> Bool
-isValue EpVar{} = True
-isValue EpUnit = True
-isValue (EpAnn e _) = isValue e
-isValue _ = unimplemented
-
 data Inj = InjL | InjR
   deriving (Show, Ord, Eq, Generic, Data)
 
@@ -70,10 +64,10 @@ pattern EpInjR :: Expr -> Expr
 pattern EpInjR e = EpInj InjR e
 
 newtype Spine = Spine [Expr]
-  deriving (Eq, Generic, Data)
+  deriving (Eq, Generic, Data, IsList)
 
 newtype Alts = Alts [Branch]
-  deriving (Eq, Generic, Data)
+  deriving (Eq, Generic, Data, IsList)
 
 -- | Patterns
 data Pat
@@ -228,22 +222,22 @@ sortOfFact (FcUnSort (UnSym s) _) = Just (Univ, s)
 sortOfFact (FcExSort (ExSym s) _) = Just (Extl, s)
 sortOfFact _                      = Nothing
 
-newtype Ctx = Ctx (Seq Fact)
+newtype TcCtx = TcCtx (Seq Fact)
   deriving (Monoid, Semigroup)
 
 -- | A possibly-inconsistent context
--- This is isomorphic to Maybe Ctx.
+-- This is isomorphic to Maybe TcCtx.
 data PICtx
-  = ConCtx Ctx
+  = ConCtx TcCtx
   -- ^ A consistent context.
   | Bottom
   -- ^ Inconsistency.
 
-(|>) :: Ctx -> Fact -> Ctx
-Ctx c |> f = Ctx (c S.|> f)
+(|>) :: TcCtx -> Fact -> TcCtx
+TcCtx c |> f = TcCtx (c S.|> f)
 
 data JudgmentItem
-  = JCtx Ctx
+  = JCtx TcCtx
   | JPrin Prin
   | JExpr Expr
   | JTy Ty
@@ -257,23 +251,23 @@ data JudgmentItem
   | Post PostData
 
 data PreData
-  = PreTypeWF Ctx Ty
-  | PreInfer Ctx Expr
-  | PreCheck Ctx Expr Ty Prin
-  | PreSpine Ctx Spine Ty Prin
-  | PreSpineRecover Ctx Spine Ty Prin
-  | PreMatch Ctx Alts [Ty] Ty Prin
-  | PreElimeq Ctx Tm Tm Sort
-  | PreSubtype Ctx Polarity Ty Ty
+  = PreTypeWF TcCtx Ty
+  | PreInfer TcCtx Expr
+  | PreCheck TcCtx Expr Ty Prin
+  | PreSpine TcCtx Spine Ty Prin
+  | PreSpineRecover TcCtx Spine Ty Prin
+  | PreMatch TcCtx Alts [Ty] Ty Prin
+  | PreElimeq TcCtx Tm Tm Sort
+  | PreSubtype TcCtx Polarity Ty Ty
 
 data PostData
-  = PostCheck Ctx
-  | PostInfer Ty Prin Ctx
-  | PostSpine Ty Prin Ctx
-  | PostSpineRecover Ty Prin Ctx
-  | PostMatch Ctx
+  = PostCheck TcCtx
+  | PostInfer Ty Prin TcCtx
+  | PostSpine Ty Prin TcCtx
+  | PostSpineRecover Ty Prin TcCtx
+  | PostMatch TcCtx
   | PostElimeq PICtx
-  | PostSubtype Ctx
+  | PostSubtype TcCtx
 
 newtype RuleName = RuleName Text
 
@@ -301,12 +295,17 @@ data SpineRecoverRule
   deriving Show
 
 data CheckRule 
-  = RForallIntro 
+  = RUnitIntro
+  | RUnitIntro_Extl 
+  | RForallIntro 
   | RArrowIntro 
+  | RArrowIntro_Extl
+  | RProdIntro
+  | RProdIntro_Extl
+  | RSumIntro Inj
+  | RSumIntro_Extl Inj
   | RCase 
   | RRec
-  | RUnitIntro_Extl 
-  | RArrowIntro_Extl
   | RSub
   deriving Show
 

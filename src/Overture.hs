@@ -49,7 +49,6 @@ import Prelude hiding
   , undefined
   , map
   , concat
-  , (.)
   , String
   , (!!)
   )
@@ -81,14 +80,11 @@ import qualified Control.Monad.Writer.Strict as SWriter
 
 import qualified Control.Monad.Reader       as Reader
 
-import qualified Control.Arrow as Arrow
-
 import Data.Void as X (Void, absurd, vacuous)
 import Data.Kind as X (Constraint, Type)
 
 import Control.Lens as X
-import Control.Arrow as X
-import Control.Category as X ((.))
+import Control.Arrow as X ((>>>), (<<<))
 
 import qualified Control.Category as Category
 

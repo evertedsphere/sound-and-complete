@@ -7,15 +7,15 @@ module Main where
 import Pretty
 import Types
 import Infer
+import Tests
+import Eval
 import Data.Text.Prettyprint.Doc.Util (putDocW)
 
 import GHC.TypeLits
 import Data.Kind
 
 main :: IO ()
-main = do
-  ppInfer initialContext fstExpr  
-  ppInfer initialContext badSndExpr
+main = tests
 
 pprs es = let
   pprPlain n e = do

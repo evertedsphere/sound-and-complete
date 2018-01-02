@@ -25,6 +25,7 @@ executable repl
       Types
       Pretty
       Overture
+      Tests
   hs-source-dirs:
       src
   build-depends:
