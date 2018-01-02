@@ -1,20 +1,18 @@
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE PolyKinds #-}
 module Overture
   ( module X
   , module Prelude
   , sshow
-  , String
   , LText.toStrict
   , LText.fromStrict
-  , Text
+  , LText.Text
   , Text'
   , tshow
   , tshow'
   , putTextLn
   , putTextLn'
-  , ByteString
+  , LByteString.ByteString
   , ByteString'
   , bshow
   , bshow'
@@ -49,7 +47,6 @@ import Prelude hiding
   , undefined
   , map
   , concat
-  , String
   , (!!)
   )
 
@@ -62,7 +59,6 @@ import qualified Data.Map       as Map
 
 import qualified Data.ByteString.Lazy as LByteString
 import qualified Data.ByteString      as SByteString
-
 import qualified Data.ByteString.Lazy.Char8 as LByteString8
 import qualified Data.ByteString.Char8 as SByteString8
 
@@ -80,126 +76,26 @@ import qualified Control.Monad.Writer.Strict as SWriter
 
 import qualified Control.Monad.Reader       as Reader
 
-import Data.Void as X (Void, absurd, vacuous)
 import Data.Kind as X (Constraint, Type)
 
-import Control.Lens as X
 import Control.Arrow as X ((>>>), (<<<))
 
 import qualified Control.Category as Category
 
-import Control.Monad.State.Class as X (
-    MonadState(..)
-  , put
-  , get
-  , gets
-  , modify
-  , state
-  )
-
-import Control.Monad.Reader as X
-  ( MonadReader(..)
-  , ask
-  , asks
-  , local
-  , reader
-  , Reader
-  , ReaderT(ReaderT)
-  , runReader
-  , runReaderT
-  )
-
-import Control.Monad.Writer.Class as X
-  ( MonadWriter
-  , writer
-  , tell
-  , listen
-  )
-
-import Control.Monad.Except as X (
-    MonadError(..)
-  , throwError
-  , catchError
-  , runExcept
-  , runExceptT
-
-  , Except
-  , ExceptT(ExceptT)
-  )
-
-import Control.Monad.Trans as X
-  ( MonadIO(..)
-  , lift
-  , liftIO
-  )
-
 import Control.Lens as X
-
-import Data.Void as X
-  ( Void
-  , absurd
-  , vacuous
-  )
-
 import Data.Function as X
-  ( const
-  , ($)
-  , flip
-  , fix
-  , on
-  , (&)
-  )
-
 import Data.Functor as X
-  ( Functor(..)
-  , (<$)
-  , ($>)
-  , (<$>)
-  , void
-  )
-
-import System.Environment as X (getArgs)
-
-import qualified System.Exit
-
-import System.Exit as X (
-    ExitCode(..)
-  , exitWith
-  , exitFailure
-  , exitSuccess
-  )
-import System.IO as X
-  ( Handle
-  , FilePath
-  , IOMode(..)
-  , stdin
-  , stdout
-  , stderr
-  , withFile
-  , openFile
-  )
-
 import Data.Foldable as X
-
 import Control.Applicative as X
-
-import Data.Typeable as X (Typeable)
-
 import Data.Maybe as X
-
 import Control.Monad as X
-
 import Data.Int as X
-
 import Data.List.NonEmpty as X (NonEmpty(..), (!!))
-
 import Data.Semigroup as X
 
 import GHC.Generics as X (Generic)
 import Data.Data as X (Data)
 import Data.Typeable as X (Typeable)
-
-type String = Data.String.String
 
 -- | A polymorphic @P.show@ function for any instance of the 
 -- @Data.String.IsString@ class.
@@ -210,14 +106,11 @@ type String = Data.String.String
 sshow :: (P.Show a, Data.String.IsString s) => a -> s
 sshow a = Data.String.fromString (P.show a)
 
-type Text  = LText.Text
 type Text' = SText.Text
-
-type ByteString  = LByteString.ByteString
 type ByteString' = SByteString.ByteString
 
 -- | @sshow@ specialised to @Text@.
-tshow :: P.Show a => a -> Text
+tshow :: P.Show a => a -> LText.Text
 tshow a = LText.pack (P.show a)
 
 -- | @sshow@ specialised to @Text'@.
@@ -225,7 +118,7 @@ tshow' :: P.Show a => a -> Text'
 tshow' a = SText.pack (P.show a)
 
 -- | @sshow@ specialised to @ByteString@.
-bshow :: P.Show a => a -> ByteString
+bshow :: P.Show a => a -> LByteString.ByteString
 bshow = sshow
 
 -- | @sshow@ specialised to @ByteString'@.
@@ -260,7 +153,7 @@ putBSLn = LByteString8.putStrLn
 putBSLn' :: SByteString8.ByteString -> IO ()
 putBSLn' = SByteString8.putStrLn
 
--- | Do nothing returning unit inside applicative.
+-- | Return a unit from an arbitrary applicative.
 pass :: Applicative f => f ()
 pass = pure ()
 {-# INLINE pass #-}
@@ -286,9 +179,3 @@ runWriterT' = SWriter.runWriterT
 runStateT' :: StateT' s m a -> s -> m (a, s)
 runStateT' = SState.runStateT
 {-# INLINE runStateT' #-}
-
--- These are pretty useless since (<$) and ($>) exist
--- (&>) :: Functor f => b -> f a -> f b
--- (&>) = map . const
--- (<&) :: Functor f => f a -> b -> f b
--- (<&) fa = for fa . const
