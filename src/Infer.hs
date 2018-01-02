@@ -59,6 +59,11 @@ import qualified Data.Map as M
 import qualified Data.Text.Lazy as T
 import qualified Data.Text.Lazy.IO as T
 
+import Control.Monad.Except
+import Control.Monad.Writer.Strict hiding ((<>))
+import Control.Monad.State hiding ((<>))
+import Control.Monad.Reader
+
 import Types
 
 import Safe
@@ -68,17 +73,26 @@ import Data.Generics.Uniplate.Data
 
 import qualified Data.List as L
 
---------------------------------------------------------------------------------
--- The typechecking monad.
---
--- All judgments are TcM actions.
---------------------------------------------------------------------------------
+{------------------------------------------------------------------------------
+
+                             The typechecking monad
+                             ======================
+
+   A State, a strict Writer, a Reader, and an ExceptT.
+
+   This monad is pure at present (the base monad is Identity), but it could be
+   turned into a transformer later to accommodate IO. For now, the purity is
+   nice since it interacts well with hspec. 
+   
+   All judgments are TcM actions.
+
+-------------------------------------------------------------------------------}
 
 newtype TcM a
   = TcM { unTcM :: ExceptT TcErr
                       (ReaderT TcConfig
                         (WriterT' TcWrite
-                          (State TcState))) a }
+                          (StateT TcState Identity))) a }
   deriving
    ( Functor
    , Applicative
@@ -108,18 +122,19 @@ initialConfig = TcConfig 0
 -- typechecker state.
 --
 -- See 'runTcM_' if you don't want the log or the state.
-runTcM :: TcM a -> ((Either Text a, TcWrite), TcState)
+runTcM :: TcM a -> (Either Text a, TcWrite, TcState)
 runTcM =
   unTcM
     >>> runExceptT
     >>> flip runReaderT initialConfig
     >>> runWriterT'
     >>> flip runState initialState
+    >>> \((a, b), c) -> (a, b, c)
 
 -- | Run a (pure) action in the typechecker monad.
 -- Returns a result or an error.
 evalTcM :: TcM a -> Either Text a
-evalTcM action = runTcM action ^. _1 . _1
+evalTcM action = runTcM action ^. _1
 
 --------------------------------------------------------------------------------
 --
@@ -128,12 +143,12 @@ evalTcM action = runTcM action ^. _1 . _1
 --------------------------------------------------------------------------------
 
 -- | Take a function to apply to the result of a typechecker action, and a
--- typechecker action.  
--- Run the typechecker, and apply the callback to the result.
+-- typechecker action. Run the typechecker, and apply the callback to the
+-- result.
 
 evalTcMWith :: (a -> IO ()) -> TcM a -> IO ()
 evalTcMWith f action = do
-  let ((result, logLines), finalState) = runTcM action
+  let (result, logLines, finalState) = runTcM action
   traverse_ (\l -> renderStdout l *> putTextLn "") logLines
 
   case result of
