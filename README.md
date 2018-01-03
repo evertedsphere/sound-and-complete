@@ -19,7 +19,7 @@ This is (to my knowledge) the first implementation of Sound and Complete ever. I
 
 PRs and new issues welcome!
 
-## Contact me
+### Contact me
 
 I'm [@mrkgrnao](https://twitter.com/mrkgrnao) on Twitter and chow *dot* soham *at* Google's mail.
 
