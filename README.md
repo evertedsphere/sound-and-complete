@@ -1,4 +1,11 @@
-# What's this?
+<div align="center">
+<blockquote>
+"oh shit, the sequel!"<br/>
+<em>— thoughtpolice</em>
+</blockquote>
+</div>
+
+## What's this?
 
 This repo contains a work-in-progress implementation of [Sound and Complete Bidirectional Typechecking for Higher-Rank Polymorphism with Existentials and Indexed Types](http://arxiv.org/abs/1601.05106), which I will refer to by the slightly more radio-friendly "Sound and Complete" hereafter. Once this is done, I plan to use it as the base for a practically useful Haskell-like language with row types, typeclasses, higher-rank polymorphism, GADTs, and composable pattern-matching. (That's the plan, anyway.)
 
