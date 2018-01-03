@@ -48,6 +48,8 @@ module Infer where
 --    Complete and Easy.
 --
 --    >>> typecheck (check (TcCtx S.Empty) EpUnit TyUnit Slash)
+--
+-- 2. FIXME Explain how markers work.
 
 import Overture hiding (pred, un, op, (|>), left, right, (<+>))
 import Test.Hspec
@@ -376,6 +378,12 @@ fresh = freshHint "t"
 freshEx :: TcM ExVar
 freshEx = ExSym <$> fresh
 
+exStar :: ExVar -> Fact
+exStar ex = FcExSort ex Star
+
+solveHole :: TcCtx -> TcCtx -> Seq Fact -> TcCtx
+solveHole l r fs = l <> TcCtx fs <> r
+
 -- | Turn a list of depth-annotated log items into a tree.
 -- (c) mattoflambda / Matt Parsons
 logToTree :: Foldable t => t (LogItem a) -> Tree a
@@ -669,6 +677,7 @@ unifyInfer ctx a b = do
 
 -- | Unify two terms or monotypes, taking context ctx = \Gamma to either a
 -- modified context \Delta or inconsistency.
+-- FIXME add post logging
 unify :: TcCtx -> Tm -> Tm -> Sort -> TcM PICtx
 unify ctx a b sort = logRecur $ do
   logPre (PreElimeq ctx a b sort)
@@ -725,10 +734,12 @@ unify ctx a b sort = logRecur $ do
       failWith "unify"
 
 -- | Check two propositions for equivalence.
+-- FIXME add proper logging
 propEquiv :: TcCtx -> Prop -> Prop -> TcM TcCtx
 propEquiv _ _ _ = failWith "propEquiv"
 
 -- | Check two types for equivalence.
+-- FIXME add proper logging
 typeEquiv :: TcCtx -> Ty -> Ty -> TcM TcCtx
 typeEquiv ctx a b = do
   go a b
@@ -748,6 +759,7 @@ typeEquiv ctx a b = do
 
 -- | Given a context and a polarity p, check if a type is a p-subtype of
 -- another.
+-- FIXME add post logging
 checkSubtype :: TcCtx -> Polarity -> Ty -> Ty -> TcM TcCtx
 checkSubtype ctx pol a b = logRecur $ do
   logPre (PreSubtype ctx pol a b)
@@ -794,7 +806,7 @@ existentializeTy
   :: UnVar -- A
   -> Ty    -- a^
   -> Ty    -- [a^/a] A
-existentializeTy u1@UnSym{} ty = case ty of
+existentializeTy u1 ty = case ty of
   TyUnVar u2 | u1 == u2 -> TyExVar (unToEx u1)
   TyBinop  l  op r      -> TyBinop (extlTy l) op (extlTy r)
   TyForall un s  a      -> TyForall un s (extlTy a)
@@ -810,280 +822,306 @@ existentializeTy u1@UnSym{} ty = case ty of
 --
 --------------------------------------------------------------------------------
 
--- | The type-checking wrapper function. 
-check :: TcCtx -> Expr -> Ty -> Prin -> TcM TcCtx
+-- | Set up the context before checking a type of the form (lhs `binop` rhs),
+-- for instance a function type, against an unknown existential variable.
+
+introBinopExtl :: TcCtx -> Binop -> ExVar -> TcM (TcCtx, ExVar, ExVar)
+introBinopExtl ctx bin var =
+  -- Hole the fact that tells us that `var` has sort Star.
+  -- FIXME total-ify pattern matches
+  let Just Star   = exVarSort ctx var
+      Just (l, r) = hole (FcExSort var Star) ctx
+  in  do
+
+        -- Create two unification variables.
+
+        e1 <- freshEx
+        e2 <- freshEx
+
+        -- Give these fresh variables sort Star. This adds facts of the
+        -- following form to the context:
+        --
+        -- [e1 : *] [e2 : *]
+
+        let e1s = FcExSort e1 Star
+            e2s = FcExSort e2 Star
+
+        -- Now assert that `var` is equal to the binary type formed 
+        -- by those two variables and the given binop.
+        --
+        -- For example, we could be asserting that
+        --
+        -- [var ~ e1 -> e2]
+        --
+        -- if binop = OpArrow.
+
+        let teq  = FcExEq var Star (TmBinop (TmExVar e1) bin (TmExVar e2))
+
+        -- Add these facts to the context.
+        --
+        -- The context now looks like
+        --
+        -- <left> [e1 : *] [e2 : *] [var ~ e1 binop e2] <right>
+        let ctx' = solveHole l r [e1s, e2s, teq]
+
+        pure (ctx', e1, e2)
+
+check
+  :: TcCtx     -- ^ context representing knowledge before attempting the typecheck
+  -> Expr      -- ^ expression to be checked
+  -> Ty        -- ^ type to be checked against
+  -> Prin      -- ^ are we claiming the type is principal?
+  -> TcM TcCtx -- ^ an updated context, representing what we know after said attempt
 check ctx ep ty pr = logRecur $ do
   logPre (PreCheck ctx ep ty pr)
   ctx' <- check' ctx ep ty pr
   logPost (PostCheck ctx')
   pure ctx'
-
--- | The function that actually does all the type-checking.
-check'
-  :: TcCtx     -- ^ context representing knowledge before attempting the typecheck
-  -> Expr    -- ^ expression to be checked
-  -> Ty      -- ^ type to be checked against
-  -> Prin    -- ^ are we claiming the type is principal?
-  -> TcM TcCtx -- ^ an updated context, representing what we know after said attempt
-
-------------------------------------------------------------------------------
--- [Rule: UnitIntro]
---
--- Introduction form for checking () against the type ().
-------------------------------------------------------------------------------
-
-check' ctx EpUnit TyUnit       _ = withRule "UnitIntro" (pure ctx)
-
-------------------------------------------------------------------------------
--- [Rule: UnitIntro-Extl]
---
--- Introduction form for checking () against an unknown type.
-------------------------------------------------------------------------------
-
-check' ctx EpUnit (TyExVar ex) _ = do
-  let Just (l, r) = hole (FcExSort ex Star) ctx
-  logRule (RuleCheck RUnitIntro_Extl)
-  pure (fillHole l (FcExEq ex Star TmUnit) r)
-
-------------------------------------------------------------------------------
--- [Rule: WithIntro]
---
--- A With form is only valid if the proposition `prop` attached to the type
--- `a` is true in the current context.
-------------------------------------------------------------------------------
-
-check' ctx ep (TyWith a prop) prin = withRule "WithIntro" $ do
-  unless (notACase ep) (failWith "case")
-  -- 1. Check if the proposition is true in the current context `ctx`.
-  let theta = checkProp ctx prop
-  -- This gives us an updated context `theta` with possibly-new information.
-  -- We then
-  --   2. update the type by substituting this context in, and
-  let ty'   = subst theta a
-  --   3. check the expression against this updated type.
-  check theta ep ty' prin
-
-------------------------------------------------------------------------------
--- [Rule: ForallIntro]
---
--- α : κ => alpha : k
--- ν     => nu
--- A     => a
-------------------------------------------------------------------------------
-
-check' ctx nu (TyForall alpha k a) prin = do
-  logRule (RuleCheck RForallIntro)
-  unless (checkedIntroForm nu) (failWith "not chkI")
-  let alpha'k = FcUnSort alpha k
-  ctx' <- check (ctx |> alpha'k) nu a prin
-  let Just (delta, theta) = hole alpha'k ctx'
-  pure delta
-
------------------------------------------------------------------------------
--- ImpliesIntro* rules
---
--- These match "implies" types. We are given a proposition (which is roughly
--- an equality between two monotypes, similar to Haskell's a ~ b) and a type.
---
--- To check an expression against a type of this form, we
---
---   1. incorporate the proposition into what we already know, the context
---      `ctx`
---   2. see whether it remains consistent or not:
---   3. if it does, we get an updated context `theta` in which to evaluate
---      the type-check, so we incorporate this new knowledge into the type
---      and recheck accordingly
---   4. if not, check whether the expression we're checking is a "checked
---      intro form". if it isn't, bail (TODO: why?)
------------------------------------------------------------------------------
-
-check' ctx nu (TyImplies prop a) Bang =
-  let markP = FcPropMark prop
-      ctx'  = assumeHypo (ctx |> markP) prop
-  in  case ctx' of                                  -- 2.
-
------------------------------------------------------------------------------
--- [Rule: ImpliesIntro]
---
--- Our assumption of the hypothesis left our context consistent (i.e. it
--- broke nothing), so we continue with the extra knowledge it gave us.
------------------------------------------------------------------------------
-
-        ConCtx theta -> withRule "ImpliesIntro" $ do -- 3.
-          outputCtx <- check theta nu (subst theta a) Bang
-          case hole markP outputCtx of
-            Just (delta, delta') -> do
-              pure delta
-            Nothing -> failWith "lol"
-
------------------------------------------------------------------------------
--- [Rule: ImpliesIntroBottom]
---
--- The hypothesis implied an inconsistency in the context!
--- This is checked, among other things, by seeing if we have a
--- head-constructor clash (using @headConClash@, the implementation of the
--- #-judgment from the paper), which is why I guess we need
--- @checkedIntroForm@ here.
------------------------------------------------------------------------------
-
-        Bottom | checkedIntroForm nu -> withRule "ImpliesIntroBottom" $ do -- 4.
-          pure ctx
-        _ -> do
-          failWith "check: ImpliesIntro*: fail" -- 1.
-
-------------------------------------------------------------------------------
--- [Rule: Rec]
---
--- TODO reduce duplication, combine with ArrowIntro
-------------------------------------------------------------------------------
-
-check' ctx (EpRec x nu) ty prin = do
-  logRule (RuleCheck RRec)
-  let xap = FcVarTy x ty prin
-  check (ctx |> xap) nu ty prin <&> hole xap >>= \case
-    Just (delta, theta) -> pure delta
-    _                   -> failWith "lol"
-
------------------------------------------------------------------------------
--- [Rule: ArrowIntro]
---
--- xap => x : A p
------------------------------------------------------------------------------
-
-check' ctx (EpLam x e) (TyArrow a b) p = do
-  logRule (RuleCheck RArrowIntro)
-  let xap = FcVarTy x a p
-  check (ctx |> xap) e b p <&> hole xap >>= \case
-    Just (delta, theta) -> pure delta
-    _                   -> failWith "lol"
-
------------------------------------------------------------------------------
--- [Rule: ArrowIntro-Extl]
---
--- WT: using Slash because unspecified principality.
------------------------------------------------------------------------------
-
-check' ctx (EpLam x e) (TyExVar ex@a) Slash = do
-  logRule (RuleCheck RArrowIntro_Extl)
-  let Just Star          = exVarSort ctx ex
-  let Just (left, right) = hole (FcExSort ex Star) ctx
-  a1 <- freshEx
-  a2 <- freshEx
-  let xa1   = FcVarTy x (TyExVar a1) Slash
-      aeq   = FcExEq a Star (TmArrow (TmExVar a1) (TmExVar a2))
-      a1s   = FcExSort a1 Star
-      a2s   = FcExSort a2 Star
-      ctx'  = left <> TcCtx [a1s, a2s, aeq] <> right
-      ctx'' = ctx' |> xa1
-  out <- check ctx'' e (TyExVar a2) Slash
-  case hole xa1 out of
-    Just (delta, _) -> pure delta
-    _               -> failWith "lol"
-
------------------------------------------------------------------------------
--- [Rule: SumIntroₖ]
---
--- Introduction form for checking a sum expression against a sum type.
---
--- We match on the head constructor of the type, deferring the "which
--- side am I injecting into" check to a case statement.
------------------------------------------------------------------------------
-
-check' ctx (EpInj inj e) (TySum a1 a2) prin = do
-  logRule (RuleCheck (RSumIntro inj))
-  check ctx e a prin
  where
-  a = case inj of
-    InjL -> a1
-    InjR -> a2
 
-------------------------------------------------------------------------------
--- [Rule: SumIntro-Extlₖ]
---
--- Introduction form for checking a sum expression against an unknown type.
-------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- [Rule: UnitIntro]
+  --
+  -- Introduction form for checking () against the type ().
+  ------------------------------------------------------------------------------
 
-check' ctx (EpInj inj e) (TyExVar a) Slash = do
-  logRule (RuleCheck (RSumIntro_Extl inj))
-  let Just Star          = exVarSort ctx a
-      Just (left, right) = hole (FcExSort a Star) ctx
-  a1 <- freshEx
-  a2 <- freshEx
-  let ak   = if inj == InjL then a1 else a2
-      aeq  = FcExEq a Star (TmExVar a1 `TmProd` TmExVar a2)
-      a1s  = FcExSort a1 Star
-      a2s  = FcExSort a2 Star
-      ctx' = left <> TcCtx [a1s, a2s, aeq] <> right
-  delta <- check ctx' e (TyExVar ak) Slash
-  pure delta
+  check' ctx EpUnit TyUnit       _ = withRule "UnitIntro" (pure ctx)
 
-  -- TODO
-  -- should we add, e.g. an EpInj case here that catches everything falling
-  -- through? or is there a legitimate reason for sum expressions to fall
-  -- to other cases? (subtyping is the last rule, remember)
+  ------------------------------------------------------------------------------
+  -- [Rule: UnitIntro-Extl]
+  --
+  -- Introduction form for checking () against an unknown type.
+  ------------------------------------------------------------------------------
 
-------------------------------------------------------------------------------
--- [Rule: ProdIntro]
---
--- Introduction form for known product types.
-------------------------------------------------------------------------------
+  check' ctx EpUnit (TyExVar ex) _ = do
+    let Just (l, r) = hole (FcExSort ex Star) ctx
+    logRule (RuleCheck RUnitIntro_Extl)
+    pure (fillHole l (FcExEq ex Star TmUnit) r)
 
-check' ctx (EpProd e1 e2) (TyProd a1 a2) prin = do
-  logRule (RuleCheck RProdIntro)
-  theta <- check ctx e1 a1 prin
-  check theta e2 (subst theta a2) prin
+  ------------------------------------------------------------------------------
+  -- [Rule: WithIntro]
+  --
+  -- A With form is only valid if the proposition `prop` attached to the type
+  -- `a` is true in the current context.
+  ------------------------------------------------------------------------------
 
-------------------------------------------------------------------------------
--- [Rule: ProdIntro-Extl]
---
--- Introduction form for unsolved-for product types.
-------------------------------------------------------------------------------
+  check' ctx ep (TyWith a prop) prin = withRule "WithIntro" $ do
+    unless (notACase ep) (failWith "case")
 
-check' ctx (EpProd e1 e2) (TyExVar a) Slash = do
-  logRule (RuleCheck RProdIntro_Extl)
-  let Just Star          = exVarSort ctx a
-      Just (left, right) = hole (FcExSort a Star) ctx
-  a1 <- freshEx
-  a2 <- freshEx
-  let aeq  = FcExEq a Star (TmExVar a1 `TmProd` TmExVar a2)
-      a1s  = FcExSort a1 Star
-      a2s  = FcExSort a2 Star
-      ctx' = left <> TcCtx [a1s, a2s, aeq] <> right
-  theta <- check ctx' e1 (TyExVar a1) Slash
-  delta <- check theta e2 (subst theta (TyExVar a2)) Slash
-  pure delta
+    -- Check if the proposition is true in the current context `ctx`.
+    let theta = checkProp ctx prop
+    -- This gives us an updated context `theta` with possibly-new information.
 
-------------------------------------------------------------------------------
--- [Rule: Case]
---
--- Case expressions, which are pattern vectors with bodies of some given type.
-------------------------------------------------------------------------------
+    -- We then: update the type by substituting this context in,
+    let ty'   = subst theta a
 
-check' gamma (EpCase e alts) _C p = do
-  logRule (RuleCheck RCase)
-  (_A, Bang, theta) <- infer gamma e
-  delta             <- matchBranches theta alts [subst theta _A] _C p
-  True              <- coverageCheck delta alts [subst delta _A]
-  -- FIXME continue from here
-  pure delta
+    -- and check the expression against this updated type.
+    check theta ep ty' prin
 
-------------------------------------------------------------------------------
--- [Rule: Sub]
---
--- Subtype checking.
---
--- This does not take the principality @prin@ supplied to @check@ into account
--- since p is left free in [Rule: Sub] in the paper.
---
--- I've moved this rule to the end since it doesn't really match on either
--- the expression or the type, so other things should "fall through" to this.
-------------------------------------------------------------------------------
+  ------------------------------------------------------------------------------
+  -- [Rule: ForallIntro]
+  --
+  -- α : κ => alpha : k
+  -- ν     => nu
+  -- A     => a
+  ------------------------------------------------------------------------------
 
-check' ctx e b _ = do
-  logRule (RuleCheck RSub)
-  let polB = polarity b
-  (a, q, theta) <- infer ctx e
-  checkSubtype theta polB a b
+  check' ctx nu (TyForall alpha k a) prin = do
+    logRule (RuleCheck RForallIntro)
+    unless (checkedIntroForm nu) (failWith "not chkI")
+    let alpha'k = FcUnSort alpha k
+    ctx' <- check (ctx |> alpha'k) nu a prin
+    let Just (delta, theta) = hole alpha'k ctx'
+    pure delta
+
+  -----------------------------------------------------------------------------
+  -- ImpliesIntro* rules
+
+  -- These match "implies" types. We are given a proposition (which is roughly
+  -- an equality between two monotypes, similar to Haskell's a ~ b) and a type.
+  --
+  -- The check proceeds as follows:
+  --
+  --           -> 3a
+  --          /
+  -- 1 -> 2 --
+  --          \
+  --           -> 3b
+  -----------------------------------------------------------------------------
+
+  check' ctx nu (TyImplies prop a) Bang = do
+    let markP = FcPropMark prop
+
+        -- 1. Incorporate the proposition into what we already know, the
+        -- context `ctx`.
+        ctx'  = assumeHypo (ctx |> markP) prop
+
+    -- 2. Check if the context remained consistent or not.
+    case ctx' of
+
+  -----------------------------------------------------------------------------
+  -- [Rule: ImpliesIntro]
+
+  -- 3a. Our assumption of the hypothesis left our context consistent (i.e. it
+  -- broke nothing). We get an updated context `theta` in which to evaluate the
+  -- type-check, so we incorporate this new knowledge into the type and recheck
+  -- accordingly
+  -----------------------------------------------------------------------------
+
+      ConCtx theta -> withRule "ImpliesIntro" $ do
+        outputCtx <- check theta nu (subst theta a) Bang
+        case hole markP outputCtx of
+          Just (delta, delta') -> do
+            pure delta
+          Nothing -> failWith "lol"
+
+  -----------------------------------------------------------------------------
+  -- [Rule: ImpliesIntroBottom]
+
+  -- 3b. The hypothesis implied an inconsistency in the context!  This is
+  -- checked, among other things, by seeing if we have a head-constructor clash
+  -- (using @headConClash@, the implementation of the "#" judgment from the
+  -- paper), which is why I guess we need @checkedIntroForm@ here.
+  -----------------------------------------------------------------------------
+
+      Bottom | checkedIntroForm nu -> withRule "ImpliesIntroBottom" $ do
+        pure ctx
+      _ -> do
+        failWith "check: ImpliesIntro*: fail"
+
+  ------------------------------------------------------------------------------
+  -- [Rule: Rec]
+  --
+  -- TODO reduce duplication, combine with ArrowIntro
+  ------------------------------------------------------------------------------
+
+  check' ctx (EpRec x nu) ty prin = do
+    logRule (RuleCheck RRec)
+    let xap = FcVarTy x ty prin
+    check (ctx |> xap) nu ty prin <&> hole xap >>= \case
+      Just (delta, theta) -> pure delta
+      _                   -> failWith "lol"
+
+  -----------------------------------------------------------------------------
+  -- [Rule: ArrowIntro]
+  --
+  -- xap => x : A p
+  -----------------------------------------------------------------------------
+
+  check' ctx (EpLam x e) (TyArrow a b) p = do
+    logRule (RuleCheck RArrowIntro)
+    let xap = FcVarTy x a p
+    check (ctx |> xap) e b p <&> hole xap >>= \case
+      Just (delta, theta) -> pure delta
+      _                   -> failWith "lol"
+
+  -----------------------------------------------------------------------------
+  -- [Rule: ArrowIntro-Extl]
+
+  -- WT: using Slash because unspecified principality.
+  -----------------------------------------------------------------------------
+
+  check' ctx (EpLam x e) (TyExVar a) Slash = do
+    logRule (RuleCheck RArrowIntro_Extl)
+
+    (ctx', a1, a2) <- introBinopExtl ctx OpArrow a
+    let xa1 = FcVarTy x (TyExVar a1) Slash
+    out <- check (ctx' |> xa1) e (TyExVar a2) Slash
+
+    case hole xa1 out of
+      Just (delta, _) -> pure delta
+      _               -> failWith "lol"
+
+  -----------------------------------------------------------------------------
+  -- [Rule: SumIntroₖ]
+
+  -- Introduction form for checking a sum expression against a sum type.
+  --
+  -- We match on the head constructor of the type, deferring the "which
+  -- side am I injecting into" check to a case statement.
+  -----------------------------------------------------------------------------
+
+  check' ctx (EpInj inj e) (TySum a1 a2) prin = do
+    logRule (RuleCheck (RSumIntro inj))
+    check ctx e a prin
+   where
+    a = case inj of
+      InjL -> a1
+      InjR -> a2
+
+  ------------------------------------------------------------------------------
+  -- [Rule: SumIntro-Extlₖ]
+
+  -- Introduction form for checking a sum expression against an unknown type.
+  ------------------------------------------------------------------------------
+
+  check' ctx (EpInj inj e) (TyExVar a) Slash = do
+    logRule (RuleCheck (RSumIntro_Extl inj))
+    (ctx', a1, a2) <- introBinopExtl ctx OpSum a
+    let ak = if inj == InjL then a1 else a2
+    delta <- check ctx' e (TyExVar ak) Slash
+    pure delta
+
+    -- TODO
+    -- should we add, e.g. an EpInj case here that catches everything falling
+    -- through? or is there a legitimate reason for sum expressions to fall
+    -- to other cases? (subtyping is the last rule, remember)
+
+  ------------------------------------------------------------------------------
+  -- [Rule: ProdIntro]
+  --
+  -- Introduction form for known product types.
+  ------------------------------------------------------------------------------
+
+  check' ctx (EpProd e1 e2) (TyProd a1 a2) prin = do
+    logRule (RuleCheck RProdIntro)
+    theta <- check ctx e1 a1 prin
+    check theta e2 (subst theta a2) prin
+
+  ------------------------------------------------------------------------------
+  -- [Rule: ProdIntro-Extl]
+  --
+  -- Introduction form for unsolved-for product types.
+  ------------------------------------------------------------------------------
+
+  check' ctx (EpProd e1 e2) (TyExVar a) Slash = do
+    logRule (RuleCheck RProdIntro_Extl)
+    (ctx', a1, a2) <- introBinopExtl ctx OpProd a
+    theta          <- check ctx' e1 (TyExVar a1) Slash
+    delta          <- check theta e2 (subst theta (TyExVar a2)) Slash
+    pure delta
+
+  ------------------------------------------------------------------------------
+  -- [Rule: Case]
+  --
+  -- Case expressions, which are pattern vectors with bodies of some given type.
+  ------------------------------------------------------------------------------
+
+  check' gamma (EpCase e alts) _C p = do
+    logRule (RuleCheck RCase)
+    (_A, Bang, theta) <- infer gamma e
+    delta             <- matchBranches theta alts [subst theta _A] _C p
+    True              <- coverageCheck delta alts [subst delta _A]
+    -- FIXME continue from here
+    pure delta
+
+  ------------------------------------------------------------------------------
+  -- [Rule: Sub]
+  --
+  -- Subtype checking.
+  --
+  -- This does not take the principality @prin@ supplied to @check@ into account
+  -- since p is left free in [Rule: Sub] in the paper.
+  --
+  -- I've moved this rule to the end since it doesn't really match on either
+  -- the expression or the type, so other things should "fall through" to this.
+  ------------------------------------------------------------------------------
+
+  check' ctx e b _ = do
+    logRule (RuleCheck RSub)
+    let polB = polarity b
+    (a, q, theta) <- infer ctx e
+    checkSubtype theta polB a b
 
 -- | Given a context and an expression, infer its type, a principality for it,
 -- and an updated context.
@@ -1149,116 +1187,109 @@ infer' ctx ep = case ep of
 -- (Bang, TyUnit, TcCtx Nil) = "the principal type () with empty output context"
 
 inferSpine
-  :: TcCtx        -- ^ input context
+  :: TcCtx      -- ^ input context
   -> Spine      -- ^ spine being applied upon (ugh)
   -> Ty         -- ^ type of expression applied to the spine
   -> Prin       -- ^ principality of aforesaid expression
-  -> TcM (Ty   --   inferred type of application
-            , Prin --   inferred principality of application
-                  , TcCtx)  --   output context      -- ^ judgment
+  -> TcM (Ty, Prin, TcCtx)  -- ^ (inferred type, inferred principality, output context)
 inferSpine ctx sp ty p = logRecur $ do
   logPre (PreSpine ctx sp ty p)
   r@(rty, rp, rctx) <- inferSpine' ctx sp ty p
   logPost (PostSpine rty rp rctx)
   pure r
+ where
 
-inferSpine' :: TcCtx -> Spine -> Ty -> Prin -> TcM (Ty, Prin, TcCtx)
-
-------------------------------------------------------------------------------
--- [Rule: ForallSpine]
---
--- The principality is omitted in the "top" rule (the antecedent?), so per
--- the "sometimes omitted" note in [Figure: Syntax of declarative types and
--- constructs], I'm assuming that means it's nonprincipal.
-------------------------------------------------------------------------------
-
-inferSpine' ctx sp (TyForall alpha k a) p = do
-  logRule (RuleSpine RForallSpine)
-  let Spine (e:s) = sp
-      alpha'      = unToEx alpha
-  (c, q, delta) <- inferSpine (ctx |> FcExSort alpha' k)
-                              sp
-                              (existentializeTy alpha a)
-                              Slash
-  pure (c, q, delta)
-
-------------------------------------------------------------------------------
--- [Rule: ImpliesSpine]
---
--- In context Γ, applying e to a spine of type P ⊃ A synthesizes (C, q, Δ)
--- if Γ tells us that the proposition P holds. (WT)
---
--- Questions:
--- Are we matching on sp to check that the spine is nonempty?
-------------------------------------------------------------------------------
-
-inferSpine' ctx sp (TyImplies prop a) p = do
-  logRule (RuleSpine RImpliesSpine)
-  let Spine (e:s) = sp
-      theta       = checkProp ctx prop
-  (c, q, delta) <- inferSpine theta sp (subst theta a) p
-  pure (c, q, delta)
+  inferSpine' :: TcCtx -> Spine -> Ty -> Prin -> TcM (Ty, Prin, TcCtx)
 
   ------------------------------------------------------------------------------
-  -- [Rule: EmptySpine]
+  -- [Rule: ForallSpine]
   --
-  -- Applying an expression to an empty spine is trivial.
-  -- Return everything unchanged.
+  -- The principality is omitted in the "top" rule (the antecedent?), so per
+  -- the "sometimes omitted" note in [Figure: Syntax of declarative types and
+  -- constructs], I'm assuming that means it's nonprincipal.
   ------------------------------------------------------------------------------
 
-inferSpine' ctx (Spine []) ty p = do
-  logRule (RuleSpine REmptySpine)
-  pure (ty, p, ctx)
+  inferSpine' ctx sp (TyForall alpha k a) p = do
+    logRule (RuleSpine RForallSpine)
+    let Spine (e:s) = sp
+        alpha'      = unToEx alpha
+    (c, q, delta) <- inferSpine (ctx |> FcExSort alpha' k)
+                                sp
+                                (existentializeTy alpha a)
+                                Slash
+    pure (c, q, delta)
 
   ------------------------------------------------------------------------------
-  -- [Rule: ArrowSpine]
+  -- [Rule: ImpliesSpine]
   --
-  -- I think this is the main function type-inferring judgment.
-  ------------------------------------------------------------------------------
-
-inferSpine' ctx sp (TyArrow a b) p = do
-  logRule (RuleSpine RArrowSpine)
-  let Spine (e:s') = sp
-      s            = Spine s'
-  -- match the "function" against the input type a
-  theta         <- check ctx e a p
-  -- match the "argument" against the output type b
-  (c, q, delta) <- inferSpine theta s (subst theta b) p
-  pure (c, q, delta)
-
-  ------------------------------------------------------------------------------
-  -- [Rule: Spine-Extl]
+  -- In context Γ, applying e to a spine of type P ⊃ A synthesizes (C, q, Δ)
+  -- if Γ tells us that the proposition P holds. (WT)
   --
-  -- FIXME: Should we be returning the original principality, or just Slash
-  -- since it was left unspecified?
+  -- Questions:
+  -- Are we matching on sp to check that the spine is nonempty?
   ------------------------------------------------------------------------------
 
-inferSpine' ctx sp (TyExVar ex@a') p = do
-  let Spine (e:s') = sp
-  Just Star          <- pure (exVarSort ctx ex)
-  Just (left, right) <- pure (hole (FcExSort ex Star) ctx)
-  a'1                <- freshEx
-  a'2                <- freshEx
+  inferSpine' ctx sp (TyImplies prop a) p = do
+    logRule (RuleSpine RImpliesSpine)
+    let Spine (e:s) = sp
+        theta       = checkProp ctx prop
+    (c, q, delta) <- inferSpine theta sp (subst theta a) p
+    pure (c, q, delta)
 
-  let arrowMType = TmExVar a'1 `TmArrow` TmExVar a'2
-      arrowType  = TyExVar a'1 `TyArrow` TyExVar a'2
-      a'1s       = exStar a'1
-      a'2s       = exStar a'2
-      a'eq       = FcExEq a' Star arrowMType
-      ctx'       = solveHole left right [a'1s, a'2s, a'eq]
+    ------------------------------------------------------------------------------
+    -- [Rule: EmptySpine]
+    --
+    -- Applying an expression to an empty spine is trivial.
+    -- Return everything unchanged.
+    ------------------------------------------------------------------------------
 
-  delta <- check ctx' e (TyExVar a'1) Slash
-  pure (arrowType, p, delta)
+  inferSpine' ctx (Spine []) ty p = do
+    logRule (RuleSpine REmptySpine)
+    pure (ty, p, ctx)
 
-inferSpine' _ _ _ _ = do
-  logRule (RuleFail JSpine)
-  failWith "inferSpine: the likely-impossible happened"
+    ------------------------------------------------------------------------------
+    -- [Rule: ArrowSpine]
+    --
+    -- I think this is the main function type-inferring judgment.
+    ------------------------------------------------------------------------------
 
-exStar :: ExVar -> Fact
-exStar ex = FcExSort ex Star
+  inferSpine' ctx sp (TyArrow a b) p = do
+    logRule (RuleSpine RArrowSpine)
+    let Spine (e:s') = sp
+        s            = Spine s'
+    -- match the "function" against the input type a
+    theta         <- check ctx e a p
+    -- match the "argument" against the output type b
+    (c, q, delta) <- inferSpine theta s (subst theta b) p
+    pure (c, q, delta)
 
-solveHole :: TcCtx -> TcCtx -> Seq Fact -> TcCtx
-solveHole l r fs = l <> TcCtx fs <> r
+    ------------------------------------------------------------------------------
+    -- [Rule: Spine-Extl]
+    --
+    -- FIXME: Should we be returning the original principality, or just Slash
+    -- since it was left unspecified?
+    ------------------------------------------------------------------------------
+
+  inferSpine' ctx sp (TyExVar a) p = do
+    let Spine (e:s') = sp
+    Just Star          <- pure (exVarSort ctx a)
+    Just (left, right) <- pure (hole (FcExSort a Star) ctx)
+    a1                 <- freshEx
+    a2                 <- freshEx
+
+    let arrowMType = TmExVar a1 `TmArrow` TmExVar a2
+        arrowType  = TyExVar a1 `TyArrow` TyExVar a2
+        a1s        = exStar a1
+        a2s        = exStar a2
+        aeq        = FcExEq a Star arrowMType
+        ctx'       = solveHole left right [a1s, a2s, aeq]
+
+    delta <- check ctx' e (TyExVar a1) Slash
+    pure (arrowType, p, delta)
+
+  inferSpine' _ _ _ _ = do
+    logRule (RuleFail JSpine)
+    failWith "inferSpine: the likely-impossible happened"
 
 inferSpineRecover :: TcCtx -> Spine -> Ty -> Prin -> TcM (Ty, Prin, TcCtx)
 inferSpineRecover ctx sp ty p = logRecur $ do
