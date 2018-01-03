@@ -1,4 +1,4 @@
-<h1 align="center">SCBTHRPEIT</h1>
+<h4 align="center">Sound and Complete Bidirectional Typechecking for Higher-Rank Polymorphism with Existentials and Indexed Types</h4>
 <h4 align="center"><em>or,</em></h4>
 <div align="center">
 <blockquote>
