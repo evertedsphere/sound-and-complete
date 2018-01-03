@@ -15,9 +15,15 @@ This paper is a sequel to [Complete and Easy Bidirectional Typechecking for High
 
 ## Help wanted!
 
-This is (to my knowledge) the first implementation of Sound and Complete ever. I'm a PLT enthusiast who actually happens to know very little in the way of real typechecker / compiler engineering. If working with / learning from / mentoring me on the (as far as I know) third non-dependently typed language with GADTs sounds interesting, let's talk!
+This is (to my knowledge) the first implementation of Sound and Complete ever. I'm a PLT enthusiast who actually happens to know very little in the way of real typechecker / compiler engineering. If working with / learning from / mentoring me on the (as far as I know) third non-dependently typed language with GADTs sounds interesting, let's talk.
 
-I'm @mrkgnaow on Twitter and chow.soham at Google's mail.
+PRs and new issues welcome!
+
+## Contact me
+
+I'm [@mrkgrnao](https://twitter.com/mrkgrnao) on Twitter and chow *dot* soham *at* Google's mail.
+
+---
 
 ## Features
 
